@@ -3,13 +3,17 @@
 //! pre-window correlation for each failure marker, and generate the §6
 //! evidence items that `score.rs` turns into a verdict.
 
+use crate::events::xid::{is_reset_line, parse_nvrm_lines};
 use crate::model::{
-    Analysis, Baseline, Evidence, FailureCorrelation, FailureMarker, TelemetrySample, XidEvent,
+    Analysis, Baseline, Evidence, FailureCorrelation, FailureMarker, MarkerKind, TelemetrySample,
+    XidEvent, stamp,
 };
 use crate::score::{print_verdict, weights_for};
+use crate::telemetry::sampler::{detect_log_source, fetch_kernel_log, fetch_kernel_log_boot};
+use crate::util::cmd::CommandRunner;
 use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Utc};
 use owo_colors::OwoColorize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// 10 s pre-window before each failure marker (PLAN §5 Stage 1).
 pub const PRE_WINDOW_SECS: i64 = 10;
@@ -22,6 +26,14 @@ const POWER_AT_LIMIT_FRAC: f64 = 0.99;
 const FAN_PINNED_PCT: u32 = 90;
 /// "Well below trip" margin in °C (PLAN §6 cooling row).
 const TRIP_MARGIN_C: u32 = 10;
+/// Throttle bits that are standing on the RTX 5090 and do not indicate an
+/// active throttle response. Observed: the 0x400 "Reliability" bit is set
+/// at 50 °C / 36 W idle, so it cannot be treated as a thermal event.
+const STANDING_THROTTLE_BITS: u64 = 0x400;
+/// How many previous boots `reconstruct_session` scans for the crash Xids
+/// (the crashed boot's index shifts as the system reboots; the journal may
+/// also rotate, so scan deep and stop at the first missing boot).
+const RECONSTRUCT_BOOT_SCAN: u32 = 15;
 
 /// A loaded monitor session (the `monitor-*.json` sidecar).
 #[derive(serde::Deserialize)]
@@ -56,6 +68,101 @@ pub fn load_samples(path: &Path) -> anyhow::Result<Vec<TelemetrySample>> {
     Ok(out)
 }
 
+/// Reconstruct a monitor session sidecar from a raw telemetry JSONL
+/// (PLAN §9 edge case: a force shutdown before the monitor writes the
+/// sidecar leaves only the JSONL). The Xid scan re-reads the kernel log
+/// and keeps events inside the session window; user marks are
+/// unrecoverable, and reset-class Xids become `DetectedReset` markers.
+pub fn reconstruct_session(jsonl_path: &Path) -> anyhow::Result<PathBuf> {
+    let samples = load_samples(jsonl_path)?;
+    let (started, ended) = samples
+        .first()
+        .zip(samples.last())
+        .map(|(a, b)| (a.ts, b.ts))
+        .ok_or_else(|| anyhow::anyhow!("empty telemetry file: {}", jsonl_path.display()))?;
+
+    // Re-read the kernel log; keep only Xids inside the session window.
+    // The crashed boot's index shifts as the system reboots again, so a
+    // single `-b -1` fetch is not reliable. Scan the current boot plus the
+    // last few previous boots and window-filter in Rust (extra boots are
+    // harmless: their Xids fall outside the session window).
+    let runner = CommandRunner::new();
+    let source = detect_log_source(&runner);
+    let mut lines: Vec<String> = vec![];
+    if let Some(src) = &source
+        && let Some(cur) = fetch_kernel_log(&runner, src)
+    {
+        lines.extend(cur);
+    }
+    for boot in 0..RECONSTRUCT_BOOT_SCAN {
+        if let Some(prev) = fetch_kernel_log_boot(&runner, -(boot as i32)) {
+            lines.extend(prev);
+        }
+    }
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let lines: Vec<String> = lines
+        .into_iter()
+        .filter(|l| seen.insert(l.clone()))
+        .collect();
+    let xid_events = if lines.is_empty() {
+        vec![]
+    } else {
+        let (_, events) = parse_nvrm_lines(lines.iter().map(String::as_str));
+        filter_window_xids(&events, started, ended)
+    };
+    let markers = reset_markers(&xid_events);
+
+    let sidecar = PathBuf::from(format!("monitor-{}.json", stamp()));
+    let report = serde_json::json!({
+        "started": started,
+        "ended": ended,
+        "jsonl": jsonl_path.to_string_lossy(),
+        "samples": samples.len(),
+        "xid_events": xid_events,
+        "markers": markers,
+        "workload": null,
+        "xid_source": source.map(|s| s.name().to_string()),
+        "interval_ms": 100,
+        "reconstructed": true,
+    });
+    std::fs::write(&sidecar, serde_json::to_string_pretty(&report)?)?;
+    Ok(sidecar)
+}
+
+/// Keep only Xids whose timestamp parses and falls inside `[start, end]`.
+/// Events with unparseable timestamps are dropped (unattributable to the
+/// window).
+pub fn filter_window_xids(
+    events: &[XidEvent],
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Vec<XidEvent> {
+    events
+        .iter()
+        .filter(|x| {
+            x.ts.as_deref()
+                .and_then(parse_xid_ts)
+                .is_some_and(|ts| ts >= start && ts <= end)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Turn reset-class Xids (Xid 79/154, NVRM reset lines) into
+/// `DetectedReset` markers at their parsed timestamps.
+fn reset_markers(xids: &[XidEvent]) -> Vec<FailureMarker> {
+    xids.iter()
+        .filter_map(|x| {
+            let ts = x.ts.as_deref().and_then(parse_xid_ts)?;
+            is_reset_line(&x.raw, Some(x.id)).then(|| FailureMarker {
+                ts,
+                kind: MarkerKind::DetectedReset,
+                note: Some(format!("reconstructed from kernel log: Xid {}", x.id)),
+            })
+        })
+        .collect()
+}
+
 /// Xid `ts` is a human timestamp from `dmesg -T` / `journalctl -k` (local
 /// time, no timezone). Parse it as local wall-clock time and convert to UTC
 /// with the machine's current offset. `dmesg -T` carries a year; the
@@ -85,6 +192,20 @@ pub fn parse_xid_ts(s: &str) -> Option<DateTime<Utc>> {
 pub fn correlate(session: &Session, samples: &[TelemetrySample]) -> Correlated {
     let mut markers: Vec<&FailureMarker> = session.markers.iter().collect();
     markers.sort_by_key(|a| a.ts);
+    // Collapse markers that are the same physical event: a Xid 79 and the
+    // Xid 154 that follows it (recovery action) land within seconds, and
+    // each would otherwise double-count the evidence.
+    let mut deduped: Vec<&FailureMarker> = vec![];
+    for m in markers {
+        if deduped
+            .last()
+            .is_some_and(|last| (m.ts - last.ts).num_seconds() <= XID_NEAR_SECS)
+        {
+            continue;
+        }
+        deduped.push(m);
+    }
+    let markers = deduped;
 
     let parsed: Vec<Option<DateTime<Utc>>> = session
         .xid_events
@@ -119,7 +240,9 @@ pub fn correlate(session: &Session, samples: &[TelemetrySample]) -> Correlated {
         let throttle_raws: Vec<u64> = window
             .iter()
             .filter_map(|s| s.throttle_reasons_raw)
-            .filter(|&raw| raw != 0)
+            // Standing bits (STANDING_THROTTLE_BITS) do not count as an
+            // active throttle response.
+            .filter(|&raw| raw & !STANDING_THROTTLE_BITS != 0)
             .collect();
         let throttle_active = !throttle_raws.is_empty();
         let throttle_reasons_raw = throttle_raws.iter().max().copied();
@@ -346,39 +469,9 @@ pub fn run_analysis(
     Ok((analysis, session))
 }
 
-/// Terminal report: session header, per-marker correlations, evidence, verdict.
-pub fn print_report(a: &Analysis, session: &Session) {
-    println!();
-    println!(
-        "{} {} ({} → {} UTC)",
-        "session analysis".bold(),
-        a.session.bold(),
-        session
-            .started
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string()
-            .dimmed(),
-        session.ended.format("%H:%M:%S").to_string().dimmed()
-    );
-    if a.baseline.is_some() {
-        println!(
-            "{} {}",
-            "baseline".dimmed(),
-            a.baseline.as_deref().unwrap_or("").dimmed()
-        );
-    } else {
-        println!(
-            "{}",
-            "note: no baseline provided — static evidence (link, AER, timeline) skipped".dimmed()
-        );
-    }
-    if a.correlations.is_empty() {
-        println!(
-            "{}",
-            "no failure markers in this session — nothing to correlate".dimmed()
-        );
-    }
-    for (i, c) in a.correlations.iter().enumerate() {
+/// Per-marker pre-window blocks (reused by the M4 report printout).
+pub fn print_correlations(correlations: &[FailureCorrelation]) {
+    for (i, c) in correlations.iter().enumerate() {
         let kind = match c.marker.kind {
             crate::model::MarkerKind::UserMark => "user mark",
             crate::model::MarkerKind::DetectedReset => "detected reset",
@@ -386,7 +479,7 @@ pub fn print_report(a: &Analysis, session: &Session) {
         println!();
         println!(
             "{} {} ({}) — pre-window {} s, {} samples",
-            format!("marker {}/{}", i + 1, a.correlations.len()).bold(),
+            format!("marker {}/{}", i + 1, correlations.len()).bold(),
             c.marker.ts.format("%H:%M:%S").to_string().bold(),
             kind,
             PRE_WINDOW_SECS,
@@ -440,6 +533,41 @@ pub fn print_report(a: &Analysis, session: &Session) {
             println!("  {} {}", "note:".dimmed(), n.dimmed());
         }
     }
+}
+
+/// Terminal report: session header, per-marker correlations, evidence, verdict.
+pub fn print_report(a: &Analysis, session: &Session) {
+    println!();
+    println!(
+        "{} {} ({} → {} UTC)",
+        "session analysis".bold(),
+        a.session.bold(),
+        session
+            .started
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string()
+            .dimmed(),
+        session.ended.format("%H:%M:%S").to_string().dimmed()
+    );
+    if a.baseline.is_some() {
+        println!(
+            "{} {}",
+            "baseline".dimmed(),
+            a.baseline.as_deref().unwrap_or("").dimmed()
+        );
+    } else {
+        println!(
+            "{}",
+            "note: no baseline provided — static evidence (link, AER, timeline) skipped".dimmed()
+        );
+    }
+    if a.correlations.is_empty() {
+        println!(
+            "{}",
+            "no failure markers in this session — nothing to correlate".dimmed()
+        );
+    }
+    print_correlations(&a.correlations);
     if !a.xids_unattributed.is_empty() {
         println!(
             "{} {}",
@@ -448,24 +576,7 @@ pub fn print_report(a: &Analysis, session: &Session) {
         );
     }
 
-    if !a.evidence.is_empty() {
-        println!();
-        println!("{}", "evidence".bold());
-        for e in &a.evidence {
-            let w: Vec<String> = e
-                .weight_per_suspect
-                .iter()
-                .map(|(s, w)| format!("{} {:+}", s, w))
-                .collect();
-            println!(
-                "  {:<32} {} {}",
-                e.id,
-                e.description.dimmed(),
-                w.join(", ").dimmed()
-            );
-        }
-    }
-
+    crate::score::print_evidence(&a.evidence);
     print_verdict(&a.verdict);
 }
 
@@ -548,7 +659,8 @@ mod tests {
         let t = Utc::now();
         let samples = vec![
             sample(t - Duration::seconds(11), 100.0, 575.0, 50, 30, 0), // outside window
-            sample(t - Duration::seconds(5), 574.9, 575.0, 69, 85, 0x400),
+            // 0x8 = HW Thermal Slowdown (an active, non-standing bit).
+            sample(t - Duration::seconds(5), 574.9, 575.0, 69, 85, 0x8),
             sample(t - Duration::seconds(1), 575.0, 575.0, 71, 90, 0),
             sample(t + Duration::seconds(1), 575.0, 575.0, 71, 90, 0), // after marker
         ];
@@ -589,7 +701,7 @@ mod tests {
         assert_eq!(cr.max_power_draw, Some(575.0));
         assert!(cr.power_at_limit);
         assert!(cr.throttle_active);
-        assert_eq!(cr.throttle_reasons_raw, Some(0x400));
+        assert_eq!(cr.throttle_reasons_raw, Some(0x8));
         // 79 is within ±2 s; 43 is 5 s away; 48 is after the marker.
         assert_eq!(cr.xids_nearby, vec![79]);
         assert!(cr.note.is_none()); // dirty window: throttle + power at limit
@@ -729,5 +841,119 @@ mod tests {
             assert!(ids.contains(&expected), "missing {expected}: {ids:?}");
         }
         assert!(!ids.contains(&"temp_below_trip_fans_not_pinned")); // 70 °C is not well below 90
+    }
+
+    #[test]
+    fn filter_window_xids_keeps_only_in_window() {
+        let t = Utc::now();
+        let mk = |id: u32, ts: Option<String>| XidEvent {
+            ts,
+            bdf: None,
+            id,
+            raw: String::new(),
+        };
+        let events = vec![
+            mk(79, Some(dmesg_ts(t + Duration::seconds(5)))),
+            mk(43, Some(dmesg_ts(t - Duration::seconds(60)))),
+            mk(48, None),
+            mk(64, Some("not a timestamp".into())),
+        ];
+        let kept = filter_window_xids(&events, t, t + Duration::seconds(60));
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].id, 79);
+    }
+
+    #[test]
+    fn reset_markers_come_only_from_reset_xids() {
+        let t = Utc::now();
+        let x79 = XidEvent {
+            ts: Some(dmesg_ts(t)),
+            bdf: None,
+            id: 79,
+            raw: "NVRM: Xid (PCI:01:00.0) 79".into(),
+        };
+        let x43 = XidEvent {
+            ts: Some(dmesg_ts(t)),
+            bdf: None,
+            id: 43,
+            raw: "NVRM: Xid (PCI:01:00.0) 43".into(),
+        };
+        let m = reset_markers(&[x79.clone(), x43]);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].kind, MarkerKind::DetectedReset);
+    }
+
+    #[test]
+    fn reconstruct_session_empty_file_errors() {
+        let dir = std::env::temp_dir().join("nvidia-debug-reconstruct-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        assert!(reconstruct_session(&path).is_err());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn same_event_xids_collapse_to_one_marker() {
+        // A Xid 79 and the Xid 154 that follows it (within 2 s) are one
+        // physical event and must produce a single correlation.
+        let t = Utc::now();
+        let marker = |dt: DateTime<Utc>| FailureMarker {
+            ts: dt,
+            kind: MarkerKind::DetectedReset,
+            note: None,
+        };
+        let session = Session {
+            started: t - Duration::seconds(60),
+            ended: t + Duration::seconds(60),
+            jsonl: String::new(),
+            xid_events: vec![
+                XidEvent {
+                    ts: Some(dmesg_ts(t)),
+                    bdf: None,
+                    id: 79,
+                    raw: String::new(),
+                },
+                XidEvent {
+                    ts: Some(dmesg_ts(t + Duration::seconds(1))),
+                    bdf: None,
+                    id: 154,
+                    raw: String::new(),
+                },
+            ],
+            markers: vec![marker(t), marker(t + Duration::seconds(1))],
+        };
+        let c = correlate(&session, &[]);
+        assert_eq!(c.correlations.len(), 1);
+        // Both Xids are nearby the single surviving marker.
+        assert_eq!(c.correlations[0].xids_nearby, vec![79, 154]);
+    }
+
+    #[test]
+    fn standing_reliability_bit_is_not_active_throttle() {
+        let t = Utc::now();
+        // 0x400 is standing on the 5090: it must not read as a thermal event.
+        let samples = vec![sample(
+            t - Duration::seconds(5),
+            100.0,
+            575.0,
+            50,
+            30,
+            0x400,
+        )];
+        let session = Session {
+            started: t - Duration::seconds(60),
+            ended: t + Duration::seconds(60),
+            jsonl: String::new(),
+            xid_events: vec![],
+            markers: vec![FailureMarker {
+                ts: t,
+                kind: MarkerKind::UserMark,
+                note: None,
+            }],
+        };
+        let c = correlate(&session, &samples);
+        assert!(!c.correlations[0].throttle_active);
+        assert_eq!(c.correlations[0].throttle_reasons_raw, None);
     }
 }

@@ -222,12 +222,26 @@ pub fn detect_log_source(r: &CommandRunner) -> Option<LogSource> {
 }
 
 /// Fetch the current kernel-log tail from the given source.
-fn fetch_kernel_log(r: &CommandRunner, source: &LogSource) -> Option<Vec<String>> {
+pub fn fetch_kernel_log(r: &CommandRunner, source: &LogSource) -> Option<Vec<String>> {
     let (cmd, args): (&str, &[&str]) = match source {
         LogSource::Dmesg => ("dmesg", &["-T"]),
         LogSource::Journal => ("journalctl", &["-k", "--no-pager", "-n", "2000"]),
     };
     let out = r.run(cmd, args);
+    out.ok
+        .then(|| out.stdout.lines().map(String::from).collect())
+}
+
+/// Fetch one boot's full kernel log (`journalctl -k -b <index>`). After a
+/// crash-induced reboot the Xids of the lost session live in a previous
+/// boot, not the current one, and the boot index of the crash shifts as
+/// the system reboots again. The whole log is fetched (no `-n` tail): a
+/// crashing driver floods the tail with NVRM spam, and the Xid lines sit
+/// well above the last 2000 lines (observed: line 2112 of 10558).
+/// `index` is a journalctl boot index: 0 = current, -1 = previous, etc.
+pub fn fetch_kernel_log_boot(r: &CommandRunner, index: i32) -> Option<Vec<String>> {
+    let boot = format!("{index}");
+    let out = r.run("journalctl", &["-k", "-b", &boot, "--no-pager"]);
     out.ok
         .then(|| out.stdout.lines().map(String::from).collect())
 }

@@ -55,6 +55,14 @@ const WEIGHTS: &[(&str, &[(Suspect, i8)])] = &[
     ("fixed_after_x2_bios_rollback", &[(Suspect::Bios, 4)]),
     ("fixed_after_x3_reseat", &[(Suspect::PcieConnector, 4)]),
     ("fixed_after_x4_psu_swap", &[(Suspect::Psu, 4)]),
+    // M4 additions for X5/X6/X8 (no §6 rows; weights match the targeted
+    // hypotheses, slightly weaker than the direct X3/X4 reseat/swap rows).
+    (
+        "fixed_after_x5_slot_change",
+        &[(Suspect::Bios, 2), (Suspect::PcieConnector, 2)],
+    ),
+    ("fixed_after_x6_rebar_toggle", &[(Suspect::Bios, 3)]),
+    ("fixed_after_x8_fan_curve", &[(Suspect::Cooling, 3)]),
     ("reproduced_in_second_system", &[(Suspect::CardHardware, 3)]),
     (
         "not_reproduced_in_second_system",
@@ -120,6 +128,28 @@ pub fn next_experiment_for(s: &Suspect) -> &'static str {
         Suspect::Cooling => {
             "X8 — fan curve / airflow check (nvidia-smi --fan-control, best-effort)"
         }
+    }
+}
+
+/// Colored evidence list (reused by the M4 report printout).
+pub fn print_evidence(evidence: &[Evidence]) {
+    if evidence.is_empty() {
+        return;
+    }
+    println!();
+    println!("{}", "evidence".bold());
+    for e in evidence {
+        let w: Vec<String> = e
+            .weight_per_suspect
+            .iter()
+            .map(|(s, w)| format!("{s} {w:+}"))
+            .collect();
+        println!(
+            "  {:<32} {} {}",
+            e.id,
+            e.description.dimmed(),
+            w.join(", ").dimmed()
+        );
     }
 }
 
@@ -204,6 +234,21 @@ mod tests {
         assert_eq!(w.get(&Suspect::Psu), Some(&2));
         assert_eq!(w.get(&Suspect::Cooling), None);
         assert!(weights_for("no_such_evidence").is_empty());
+    }
+
+    #[test]
+    fn m4_experiment_rows_are_weighted() {
+        let w5 = weights_for("fixed_after_x5_slot_change");
+        assert_eq!(w5.get(&Suspect::Bios), Some(&2));
+        assert_eq!(w5.get(&Suspect::PcieConnector), Some(&2));
+        assert_eq!(
+            weights_for("fixed_after_x6_rebar_toggle").get(&Suspect::Bios),
+            Some(&3)
+        );
+        assert_eq!(
+            weights_for("fixed_after_x8_fan_curve").get(&Suspect::Cooling),
+            Some(&3)
+        );
     }
 
     #[test]

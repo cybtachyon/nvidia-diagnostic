@@ -3,13 +3,16 @@
 //! baseline snapshot and the colored baseline table. M2: live telemetry
 //! monitor (`monitor` subcommand). M3: session analysis, pre-window
 //! correlation, §6 scoring and the verdict (`analyze` subcommand,
-//! full-battery flow).
+//! full-battery flow). M4: guided isolation experiments (`experiment`)
+//! and the shareable report (`report`).
 
 mod analysis;
 mod events;
+mod experiments;
 mod model;
 mod monitor;
 mod probe;
+mod report;
 mod score;
 mod telemetry;
 mod util;
@@ -27,7 +30,7 @@ use probe::{
 };
 use serde_json::Value;
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use util::cmd::{CommandRunner, read_file_lossy};
 
 fn main() -> Result<()> {
@@ -36,8 +39,9 @@ fn main() -> Result<()> {
         Some("baseline") => cmd_baseline(&args[1..]),
         Some("monitor") => cmd_monitor(&args[1..]),
         Some("analyze") => cmd_analyze(&args[1..]),
-        Some("experiment") => not_yet("experiment", "M4"),
-        Some("report") => not_yet("report", "M4"),
+        Some("experiment") => cmd_experiment(&args[1..]),
+        Some("report") => cmd_report(&args[1..]),
+        Some("reconstruct") => cmd_reconstruct(&args[1..]),
         Some(a) if a == "--help" || a == "-h" => {
             print_usage();
             Ok(())
@@ -68,16 +72,23 @@ Usage:
                                  M3: pre-window correlation + §6 scoring + verdict
                                  for a monitor session (defaults to the newest
                                  monitor-*.json); [--baseline PATH] adds the
-                                 static evidence (link, AER, user timeline)
-  nvidia-debug experiment <N>   rerun after isolation experiment N (M4)
-  nvidia-debug report           view / export previous report (M4)
+                                 static evidence (link, AER, user timeline).
+                                 Writes a report-<ts>.json
+  nvidia-debug experiment <X1..X8>
+                                 M4: guided isolation experiment. Shows the
+                                 steps, retests under the monitor, asks the
+                                 outcome, folds it into the scores and writes
+                                 a report. [--session PATH] [--baseline PATH]
+                                 [--outcome fixed|still|reproduced|not-reproduced]
+  nvidia-debug report [PATH]      M4: view / export a previous report (defaults
+                                 to the newest report-*.json)
+  nvidia-debug reconstruct <JSONL>
+                                 Rebuild a monitor-*.json session sidecar from a
+                                 raw telemetry JSONL (after a force shutdown
+                                 skipped the sidecar write). Scans the kernel
+                                 log for Xids in the session window.
   nvidia-debug --help           this help"
     );
-}
-
-fn not_yet(name: &str, milestone: &str) -> Result<()> {
-    println!("`{name}` is not implemented yet (lands in {milestone}); see PLAN.md §11.");
-    Ok(())
 }
 
 fn interactive_menu() -> Result<()> {
@@ -91,8 +102,8 @@ fn interactive_menu() -> Result<()> {
     match choice {
         "Full diagnostic battery (recommended)" => cmd_battery(),
         "Monitor only" => cmd_monitor(&[]),
-        "Rerun an isolation experiment" => not_yet("experiment", "M4"),
-        "View / export previous report" => not_yet("report", "M4"),
+        "Rerun an isolation experiment" => cmd_experiment(&[]),
+        "View / export previous report" => cmd_report(&[]),
         _ => unreachable!(),
     }
 }
@@ -246,6 +257,16 @@ fn cmd_battery() -> Result<()> {
     })?;
     let (analysis, loaded) = analysis::run_analysis(&session, Some(&baseline_path))?;
     analysis::print_report(&analysis, &loaded);
+    write_session_report(&session, Some(baseline_path.as_path()))
+}
+
+/// M4: fold the session into the shareable `report-<ts>.json` (PLAN §4.1
+/// step 8) and print where it landed.
+fn write_session_report(session_path: &Path, baseline_path: Option<&Path>) -> Result<()> {
+    let rep = report::build_report(session_path, baseline_path, &[])?;
+    let path = report::write_report(&rep)?;
+    println!();
+    println!("{} {}", "report written:".bold(), path.display().bold());
     Ok(())
 }
 
@@ -271,34 +292,248 @@ fn cmd_analyze(args: &[String]) -> Result<()> {
     }
     let session_path = match session {
         Some(p) => PathBuf::from(p),
-        None => find_latest_session()?,
+        None => latest_session()?,
     };
     let baseline_path = baseline.map(PathBuf::from);
     let (analysis, loaded) = analysis::run_analysis(&session_path, baseline_path.as_deref())?;
     analysis::print_report(&analysis, &loaded);
-    Ok(())
+    write_session_report(&session_path, baseline_path.as_deref())
 }
 
 /// The newest `monitor-*.json` in the working directory (by mtime).
-fn find_latest_session() -> Result<PathBuf> {
-    let mut best: Option<(PathBuf, Option<std::time::SystemTime>)> = None;
-    for entry in std::fs::read_dir(".")? {
-        let entry = entry?;
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with("monitor-") && name.ends_with(".json") {
-            // `Option` ordering: a missing mtime sorts below any real one.
-            let mtime = entry.metadata().and_then(|m| m.modified()).ok();
-            if best.as_ref().is_none_or(|(_, m)| mtime > *m) {
-                best = Some((path, mtime));
+fn latest_session() -> Result<PathBuf> {
+    report::latest_matching("monitor-", ".json")
+}
+
+// ---------------------------------------------------------------------------
+// experiment subcommand (M4)
+// ---------------------------------------------------------------------------
+
+fn cmd_experiment(args: &[String]) -> Result<()> {
+    let mut session: Option<String> = None;
+    let mut baseline: Option<String> = None;
+    let mut outcome: Option<String> = None;
+    let mut id: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--session" => {
+                i += 1;
+                session = args.get(i).cloned();
             }
+            "--baseline" => {
+                i += 1;
+                baseline = args.get(i).cloned();
+            }
+            "--outcome" => {
+                i += 1;
+                outcome = args.get(i).cloned();
+            }
+            a if a.starts_with('-') => anyhow::bail!("unknown experiment argument: {a}"),
+            a if id.is_none() => id = Some(a.to_string()),
+            a => anyhow::bail!("unexpected experiment argument: {a}"),
+        }
+        i += 1;
+    }
+    let tty = std::io::stdin().is_terminal();
+    let id = match id {
+        Some(id) => id,
+        None if tty => {
+            let items: Vec<String> = experiments::EXPERIMENTS
+                .iter()
+                .map(|e| format!("{}: {}", e.id, e.name))
+                .collect();
+            let pick =
+                inquire::Select::new("Which isolation experiment did you run?", items).prompt()?;
+            pick.split_once(':')
+                .map(|(l, _)| l.trim().to_string())
+                .unwrap_or_default()
+        }
+        None => {
+            anyhow::bail!(
+                "usage: nvidia-debug experiment <X1..X8> [--session PATH] [--baseline PATH] \
+                 [--outcome fixed|still|reproduced|not-reproduced]"
+            )
+        }
+    };
+    let exp = experiments::by_id(&id)
+        .ok_or_else(|| anyhow::anyhow!("unknown experiment: {id} (expected X1..X8)"))?;
+
+    // --- Show the definition (PLAN §5 Stage 4) ---
+    println!();
+    println!("{} {}", exp.id, exp.name.bold());
+    println!("{}", exp.description.dimmed());
+    println!(
+        "{} {}",
+        "targets:".dimmed(),
+        exp.targets
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!(
+        "{} {}",
+        "preconditions:".dimmed(),
+        exp.preconditions.dimmed()
+    );
+    println!("{}", "steps:".dimmed());
+    for (n, step) in exp.steps.iter().enumerate() {
+        println!("  {}. {step}", n + 1);
+    }
+
+    // --- Confirm the user performed the physical change ---
+    if tty {
+        let done =
+            inquire::Confirm::new("Did you perform the change (and reboot where a step says)?")
+                .with_default(true)
+                .prompt()?;
+        if !done {
+            println!(
+                "{}",
+                "perform the steps above, then re-run this command".dimmed()
+            );
+            return Ok(());
         }
     }
-    best.map(|(p, _)| p).ok_or_else(|| {
-        anyhow::anyhow!(
-            "no monitor session found; run `nvidia-debug monitor` first, or pass a session path to `analyze`"
-        )
-    })
+
+    // --- Retest under the monitor ---
+    let session_path = match session {
+        Some(p) => PathBuf::from(p),
+        None => {
+            let retest = if tty {
+                inquire::Confirm::new(
+                    "Start the monitor now to retest? (run your workload; m on each black screen, q to stop)",
+                )
+                .with_default(true)
+                .prompt()?
+            } else {
+                true
+            };
+            if retest {
+                monitor::run_monitor(monitor::MonitorOptions {
+                    duration_secs: None,
+                    jsonl: None,
+                    workload: None,
+                    interval_ms: 100,
+                })?
+            } else {
+                latest_session()?
+            }
+        }
+    };
+
+    // --- Outcome (the post-check that folds into the scores) ---
+    let outcome = match outcome {
+        Some(s) => parse_outcome(&s, exp)?,
+        None if tty => {
+            let choices = experiments::outcome_choices(exp.id);
+            let labels: Vec<String> = choices
+                .iter()
+                .map(|o| experiments::outcome_label(o).to_string())
+                .collect();
+            let pick = inquire::Select::new("After the retest, what happened?", labels.clone())
+                .prompt()?;
+            let idx = labels.iter().position(|l| l == &pick).unwrap_or(0);
+            choices[idx]
+        }
+        None => anyhow::bail!("--outcome is required without a TTY"),
+    };
+
+    // --- Inherit prior experiment runs from the latest report, so the
+    // scores accumulate across experiments. A re-run of the same
+    // experiment replaces the earlier record. ---
+    let mut runs = report::find_latest_report()
+        .ok()
+        .and_then(|p| report::load_report(&p).ok())
+        .map(|r| r.experiments_run)
+        .unwrap_or_default();
+    runs.retain(|r| r.id != exp.id);
+    runs.push(model::ExperimentRun {
+        id: exp.id.to_string(),
+        ts: now(),
+        outcome,
+        note: None,
+    });
+
+    let baseline_path = baseline.map(PathBuf::from);
+    let rep = report::build_report(&session_path, baseline_path.as_deref(), &runs)?;
+    let path = report::write_report(&rep)?;
+    report::print_report(&rep);
+    println!();
+    println!("{} {}", "report written:".bold(), path.display().bold());
+    Ok(())
+}
+
+fn parse_outcome(s: &str, exp: &experiments::Experiment) -> Result<model::ExperimentOutcome> {
+    let normalized = s.trim().to_ascii_lowercase();
+    let outcome = match normalized.as_str() {
+        "fixed" => model::ExperimentOutcome::Fixed,
+        "still" | "still-reproducing" | "reproducing" => model::ExperimentOutcome::StillReproducing,
+        "reproduced" | "reproduced-in-second-system" => {
+            model::ExperimentOutcome::ReproducedInSecondSystem
+        }
+        "not-reproduced" | "not-reproduced-in-second-system" => {
+            model::ExperimentOutcome::NotReproducedInSecondSystem
+        }
+        other => {
+            anyhow::bail!(
+                "unknown outcome: {other} (expected fixed, still, reproduced, not-reproduced)"
+            )
+        }
+    };
+    if !experiments::outcome_choices(exp.id).contains(&outcome) {
+        anyhow::bail!(
+            "{outcome:?} is not a valid outcome for {}; valid: {}",
+            exp.id,
+            experiments::outcome_choices(exp.id)
+                .iter()
+                .map(|o| experiments::outcome_label(o))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    Ok(outcome)
+}
+
+// ---------------------------------------------------------------------------
+// report subcommand (M4)
+// ---------------------------------------------------------------------------
+
+fn cmd_report(args: &[String]) -> Result<()> {
+    let path = match args.first() {
+        Some(p) => PathBuf::from(p),
+        None => report::find_latest_report()?,
+    };
+    let rep = report::load_report(&path)?;
+    report::print_report(&rep);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// reconstruct subcommand (M4)
+// ---------------------------------------------------------------------------
+
+fn cmd_reconstruct(args: &[String]) -> Result<()> {
+    let jsonl = match args.first() {
+        Some(p) => PathBuf::from(p),
+        None => anyhow::bail!("usage: nvidia-debug reconstruct <TELEMETRY-JSONL>"),
+    };
+    let sidecar = analysis::reconstruct_session(&jsonl)?;
+    let session = analysis::load_session(&sidecar)?;
+    println!(
+        "{} {} ({} Xid(s), {} marker(s))",
+        "sidecar written:".bold(),
+        sidecar.display().bold(),
+        session.xid_events.len(),
+        session.markers.len(),
+    );
+    println!(
+        "{} {}",
+        "next:".dimmed(),
+        format!("nvidia-debug analyze {}", sidecar.display()).dimmed()
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

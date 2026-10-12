@@ -1,5 +1,6 @@
-//! Core data model (PLAN §4.3). M1 uses `Baseline` and its parts; the
+//! Core data model (PLAN §4.3, §4.4). M1 uses `Baseline` and its parts; the
 //! telemetry/evidence/verdict types are defined now so M2–M4 build on them.
+//! M4 adds the shareable `Report` and the experiment-run records.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -255,5 +256,78 @@ pub struct Analysis {
     /// Session Xids that could not be time-attributed to a marker.
     pub xids_unattributed: Vec<u32>,
     pub evidence: Vec<Evidence>,
+    pub verdict: Verdict,
+}
+
+// ---------------------------------------------------------------------------
+// Stage 4/5 — M4 experiments & report (PLAN §4.4, §5 Stage 4)
+// ---------------------------------------------------------------------------
+
+/// Min/avg/max of one numeric telemetry field over a whole session
+/// (PLAN §4.4 `telemetry_summary`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct Stats {
+    pub min: Option<f64>,
+    pub avg: Option<f64>,
+    pub max: Option<f64>,
+}
+
+/// Session-wide telemetry summary (PLAN §4.4). The per-failure windows are
+/// carried by the `FailureCorrelation` list in the report, so this struct
+/// only holds the global min/avg/max.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct TelemetrySummary {
+    pub sample_count: u64,
+    pub duration_secs: f64,
+    pub temp_gpu_c: Stats,
+    pub power_draw_w: Stats,
+    pub clock_graphics_mhz: Stats,
+    pub fan_pct: Stats,
+    pub util_gpu_pct: Stats,
+}
+
+/// Outcome of one user-executed isolation experiment (PLAN §5 Stage 4).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExperimentOutcome {
+    /// Failure no longer reproduces after the change (X1–X6, X8).
+    Fixed,
+    /// Failure still reproduces after the change (X1–X6, X8).
+    StillReproducing,
+    /// X7: failure reproduces in the known-good second system (card side).
+    ReproducedInSecondSystem,
+    /// X7: failure does not reproduce in the second system (system side).
+    NotReproducedInSecondSystem,
+}
+
+/// One recorded experiment run, folded into the report's `experiments_run`
+/// and (when scored) into the §6 evidence set.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ExperimentRun {
+    /// Experiment id, e.g. `X3`.
+    pub id: String,
+    pub ts: DateTime<Utc>,
+    pub outcome: ExperimentOutcome,
+    pub note: Option<String>,
+}
+
+/// The shareable report (PLAN §4.4): the unit of replication. Anyone can
+/// diff two reports (before/after a change, or two machines).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Report {
+    pub ts: DateTime<Utc>,
+    /// Monitor session sidecar this report was built from.
+    pub session: String,
+    pub baseline: Option<Baseline>,
+    /// User timeline answers, duplicated from the baseline for readers who
+    /// only look at the top level (PLAN §4.4 `timeline`).
+    pub timeline: Option<TimelineAnswers>,
+    pub telemetry: TelemetrySummary,
+    pub xid_events: Vec<XidEvent>,
+    pub markers: Vec<FailureMarker>,
+    pub correlations: Vec<FailureCorrelation>,
+    pub experiments_run: Vec<ExperimentRun>,
+    pub evidence: Vec<Evidence>,
+    /// Per-suspect scores (same data as `verdict.ranked`).
+    pub scores: Vec<RankedSuspect>,
     pub verdict: Verdict,
 }
