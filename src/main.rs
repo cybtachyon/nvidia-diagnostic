@@ -14,6 +14,7 @@ mod monitor;
 mod probe;
 mod report;
 mod score;
+mod suspend;
 mod telemetry;
 mod util;
 mod workload;
@@ -31,7 +32,7 @@ use probe::{
 use serde_json::Value;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use util::cmd::{CommandRunner, read_file_lossy};
+use util::cmd::{CommandRunner, is_root};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -43,6 +44,7 @@ fn main() -> Result<()> {
         Some("experiment") => cmd_experiment(&args[1..]),
         Some("report") => cmd_report(&args[1..]),
         Some("reconstruct") => cmd_reconstruct(&args[1..]),
+        Some("suspend") => cmd_suspend(&args[1..]),
         Some(a) if a == "--help" || a == "-h" => {
             print_usage();
             Ok(())
@@ -93,6 +95,12 @@ Usage:
                                  raw telemetry JSONL (after a force shutdown
                                  skipped the sidecar write). Scans the kernel
                                  log for Xids in the session window.
+  nvidia-diagnostic suspend          resume-from-sleep test: nvidia service
+                                  states, DRM/KMS (nvidia_drm modeset +
+                                  mkinitcpio early-KMS module list), video
+                                  memory preservation (pre-/post-595 driver
+                                  paths), and the active boot loader (GRUB vs
+                                  Limine via efibootmgr)
   nvidia-diagnostic --help           this help"
     );
 }
@@ -102,14 +110,17 @@ fn interactive_menu() -> Result<()> {
         "Full diagnostic battery (recommended)",
         "Monitor only",
         "Run a stress window (fixed duration)",
+        "Check resume from sleep (suspend/resume)",
         "Rerun an isolation experiment",
         "View / export previous report",
     ];
-    let choice = inquire::Select::new("What do you want to do? (Ctrl+C to quit)", items.clone()).prompt()?;
+    let choice =
+        inquire::Select::new("What do you want to do? (Ctrl+C to quit)", items.clone()).prompt()?;
     match choice {
         "Full diagnostic battery (recommended)" => cmd_battery(),
         "Monitor only" => cmd_monitor(&[]),
         "Run a stress window (fixed duration)" => cmd_stress(&[]),
+        "Check resume from sleep (suspend/resume)" => cmd_suspend(&[]),
         "Rerun an isolation experiment" => cmd_experiment(&[]),
         "View / export previous report" => cmd_report(&[]),
         _ => unreachable!(),
@@ -134,7 +145,7 @@ fn cmd_baseline(args: &[String]) -> Result<()> {
 /// baseline as JSON for the M3 analysis.
 fn run_baseline(json_path: Option<PathBuf>) -> Result<()> {
     // --- Preflight (PLAN §4.1 step 1, §7 M5 edge cases: missing tools, no root) ---
-    let is_root = euid_is_zero();
+    let is_root = is_root();
     let runner = CommandRunner::new();
     let kernel = runner.stdout("uname", &["-r"]);
     println!(
@@ -197,19 +208,6 @@ fn run_baseline(json_path: Option<PathBuf>) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn euid_is_zero() -> bool {
-    let status = read_file_lossy("/proc/self/status");
-    status
-        .as_deref()
-        .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("Uid:"))
-                .and_then(|l| l.split_whitespace().nth(1))
-        })
-        .and_then(|v| v.parse::<u32>().ok())
-        .is_some_and(|uid| uid == 0)
 }
 
 /// External tools the probes depend on, with what degrades when each is
@@ -568,6 +566,15 @@ fn cmd_reconstruct(args: &[String]) -> Result<()> {
         format!("nvidia-diagnostic analyze {}", sidecar.display()).dimmed()
     );
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// suspend subcommand (resume-from-sleep test)
+// ---------------------------------------------------------------------------
+
+fn cmd_suspend(_args: &[String]) -> Result<()> {
+    let runner = CommandRunner::new();
+    suspend::run(&runner)
 }
 
 // ---------------------------------------------------------------------------

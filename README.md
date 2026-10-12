@@ -68,6 +68,11 @@ nvidia-diagnostic report [PATH]    view / export a previous report (defaults to 
 nvidia-diagnostic reconstruct <JSONL>
                               rebuild a monitor-*.json sidecar from a raw telemetry
                               JSONL (after a force shutdown skipped the sidecar)
+nvidia-diagnostic suspend      resume-from-sleep test: nvidia service states,
+                              DRM/KMS (nvidia_drm modeset + mkinitcpio early-KMS
+                              module list), video memory preservation (pre-/post-595
+                              driver paths), and the active boot loader (GRUB vs
+                              Limine via efibootmgr)
 ```
 
 ## The full battery (fresh machine)
@@ -104,6 +109,41 @@ The canonical, replicable procedure. Run it *while the failure reproduces*.
    The JSON is what you share: it carries the baseline, timeline, telemetry
    summary, per-failure windows, Xids, markers, experiment runs, the evidence
    set, and the final ranked verdict.
+
+## The resume-from-sleep test
+
+`nvidia-diagnostic suspend` checks the pieces that make NVIDIA resume from
+sleep work (Arch Wiki, "Preserve video memory after suspend"):
+
+1. **Services.** `nvidia-suspend`, `nvidia-resume`, `nvidia-hibernate`, and
+   `nvidia-persistenced` are checked with `systemctl is-active` /
+   `is-enabled`. oneshot units are expected to be inactive at rest, so only a
+   disabled unit or a stopped daemon is offered for enabling (with `sudo
+   systemctl enable --now` when not root).
+2. **DRM/KMS.** `/sys/module/nvidia_drm/parameters/modeset` = `Y` means
+   Direct Rendering Manager and Kernel Mode Setting are enabled. When it is
+   not `Y`, the tool scans `/etc/mkinitcpio.conf` and
+   `/etc/mkinitcpio.conf.d/*.conf` for
+   `MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)` (the `MODULES+=`
+   form is accepted too). If the list is missing, it can write
+   `/etc/mkinitcpio.conf.d/10-chwd.conf` and rebuild with `sudo mkinitcpio -P`.
+3. **Video memory preservation.** Pre-595 drivers need
+   `NVreg_PreserveVideoMemoryAllocations=1`; 595+ drivers use
+   `NVreg_UseKernelSuspendNotifiers=1`. The tool reads
+   `/proc/driver/nvidia/params`, falls back to
+   `/sys/module/nvidia/parameters/NVreg_PreserveVideoMemoryAllocations`, and
+   notes the edge cases: the temp file on tmpfs (`NVreg_TemporaryFilePath`,
+   offered when `/var/tmp` is a real filesystem with VRAM + 5% free), early
+   KMS breaking hibernation, and the 5% capacity requirement.
+4. **Boot loader.** `efibootmgr` reports which boot loader is active (GRUB vs
+   Limine), which matters for how the framebuffer is handed to the OS.
+
+If every driver-side check passes and the screen is still black after resume,
+the summary points at the display manager layer (plasma-login-manager, part of
+the CachyOS stack) and the known workaround: switch to TTY3 (Ctrl+Alt+F3),
+then back to TTY2 (Ctrl+Alt+F2), which forces the plasma login screen to
+re-evaluate the framebuffer. A confirmed display-manager root cause pauses
+work on this tool; the fix is contributed upstream.
 
 ## How the verdict works
 

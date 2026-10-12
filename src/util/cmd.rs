@@ -110,6 +110,19 @@ pub fn read_file_lossy(path: &str) -> Option<String> {
         .map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
+/// True when the effective uid is 0.
+pub fn is_root() -> bool {
+    read_file_lossy("/proc/self/status")
+        .as_deref()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("Uid:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+        })
+        .and_then(|v| v.parse::<u32>().ok())
+        .is_some_and(|uid| uid == 0)
+}
+
 impl Default for CommandRunner {
     fn default() -> Self {
         Self::new()
