@@ -10,6 +10,11 @@ pub fn now() -> DateTime<Utc> {
     Utc::now()
 }
 
+/// File-name stamp (`20251012T012345Z`) for report/session artifacts.
+pub fn stamp() -> String {
+    now().format("%Y%m%dT%H%M%SZ").to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Stage 0 — baseline
 // ---------------------------------------------------------------------------
@@ -158,7 +163,6 @@ pub enum MarkerKind {
 // ---------------------------------------------------------------------------
 
 /// Suspect categories scored in M3 (PLAN §6); consumed by `score.rs`.
-#[allow(dead_code)]
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Suspect {
     #[default]
@@ -185,7 +189,6 @@ impl std::fmt::Display for Suspect {
 }
 
 /// A piece of evidence with signed weights per suspect (PLAN §6).
-#[allow(dead_code)]
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Evidence {
     pub id: String,
@@ -195,7 +198,6 @@ pub struct Evidence {
 }
 
 /// A suspect with its M3 score and the evidence ids that contributed.
-#[allow(dead_code)]
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct RankedSuspect {
     pub suspect: Suspect,
@@ -205,9 +207,53 @@ pub struct RankedSuspect {
 }
 
 /// The ranked M3 verdict with the next suggested experiment.
-#[allow(dead_code)]
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Verdict {
     pub ranked: Vec<RankedSuspect>,
     pub next_experiment: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Stage 3 — M3 analysis output (PLAN §4.4, §5 Stage 1/3)
+// ---------------------------------------------------------------------------
+
+/// 10 s pre-window correlation for one failure marker (PLAN §5 Stage 1).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct FailureCorrelation {
+    pub marker: FailureMarker,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub sample_count: usize,
+    pub max_temp_gpu: Option<u32>,
+    pub max_temp_mem: Option<u32>,
+    pub max_power_draw: Option<f64>,
+    pub power_limit: Option<f64>,
+    /// Pre-window peak draw at/over 99% of the limit (PLAN §6 "at/over limit").
+    pub power_at_limit: bool,
+    pub min_clock_graphics: Option<u32>,
+    pub max_fan_pct: Option<u32>,
+    /// Any active throttle reason in the pre-window (bitmask != 0).
+    pub throttle_active: bool,
+    /// Highest active-throttle bitmask seen in the pre-window.
+    pub throttle_reasons_raw: Option<u64>,
+    /// Last known PCIe link state inside the pre-window.
+    pub link: Option<(u8, u8)>,
+    /// Xid ids within ±2 s of the marker (time-attributed; deduplicated).
+    pub xids_nearby: Vec<u32>,
+    /// Interpretation note (e.g. no Xid + clean pre-window → display/EDID path).
+    pub note: Option<String>,
+}
+
+/// The full M3 analysis of one monitor session (PLAN §7 M3, §4.4).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Analysis {
+    /// Monitor session sidecar this analysis was built from.
+    pub session: String,
+    /// Baseline JSON used for the static evidence, if any.
+    pub baseline: Option<String>,
+    pub correlations: Vec<FailureCorrelation>,
+    /// Session Xids that could not be time-attributed to a marker.
+    pub xids_unattributed: Vec<u32>,
+    pub evidence: Vec<Evidence>,
+    pub verdict: Verdict,
 }

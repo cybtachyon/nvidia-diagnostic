@@ -1,12 +1,16 @@
 //! `nvidia-debug` — reproducible root-cause diagnosis for RTX 5090 context
 //! loss (PLAN §4.1). M1: subcommand dispatch, interactive menu, Stage-0
 //! baseline snapshot and the colored baseline table. M2: live telemetry
-//! monitor (`monitor` subcommand).
+//! monitor (`monitor` subcommand). M3: session analysis, pre-window
+//! correlation, §6 scoring and the verdict (`analyze` subcommand,
+//! full-battery flow).
 
+mod analysis;
 mod events;
 mod model;
 mod monitor;
 mod probe;
+mod score;
 mod telemetry;
 mod util;
 mod workload;
@@ -23,6 +27,7 @@ use probe::{
 };
 use serde_json::Value;
 use std::io::IsTerminal;
+use std::path::PathBuf;
 use util::cmd::{CommandRunner, read_file_lossy};
 
 fn main() -> Result<()> {
@@ -30,6 +35,7 @@ fn main() -> Result<()> {
     match args.first().map(String::as_str) {
         Some("baseline") => cmd_baseline(&args[1..]),
         Some("monitor") => cmd_monitor(&args[1..]),
+        Some("analyze") => cmd_analyze(&args[1..]),
         Some("experiment") => not_yet("experiment", "M4"),
         Some("report") => not_yet("report", "M4"),
         Some(a) if a == "--help" || a == "-h" => {
@@ -58,6 +64,11 @@ Usage:
                                 scan, `m` marks black screens, auto reset detect
                                 [--duration N] [--jsonl PATH] [--interval MS]
                                 [--workload CMD [ARGS...]]
+  nvidia-debug analyze [SESSION]
+                                 M3: pre-window correlation + §6 scoring + verdict
+                                 for a monitor session (defaults to the newest
+                                 monitor-*.json); [--baseline PATH] adds the
+                                 static evidence (link, AER, user timeline)
   nvidia-debug experiment <N>   rerun after isolation experiment N (M4)
   nvidia-debug report           view / export previous report (M4)
   nvidia-debug --help           this help"
@@ -78,12 +89,7 @@ fn interactive_menu() -> Result<()> {
     ];
     let choice = inquire::Select::new("What do you want to do?", items.clone()).prompt()?;
     match choice {
-        "Full diagnostic battery (recommended)" => {
-            println!(
-                "Running the full battery — Stage 0 baseline now (analysis lands in M3; run `monitor` under the workload).\n"
-            );
-            cmd_baseline(&[])
-        }
+        "Full diagnostic battery (recommended)" => cmd_battery(),
         "Monitor only" => cmd_monitor(&[]),
         "Rerun an isolation experiment" => not_yet("experiment", "M4"),
         "View / export previous report" => not_yet("report", "M4"),
@@ -100,8 +106,14 @@ fn cmd_baseline(args: &[String]) -> Result<()> {
     let json_path = args
         .iter()
         .position(|a| a == "--json")
-        .map(|i| args.get(i + 1).filter(|a| !a.starts_with('-')).cloned());
+        .and_then(|i| args.get(i + 1).filter(|a| !a.starts_with('-')).cloned())
+        .map(PathBuf::from);
+    run_baseline(json_path)
+}
 
+/// Stage-0 baseline snapshot; `json_path` (when set) also writes the
+/// baseline as JSON for the M3 analysis.
+fn run_baseline(json_path: Option<PathBuf>) -> Result<()> {
     // --- Preflight (PLAN §4.1 step 1) ---
     let is_root = euid_is_zero();
     let kernel = CommandRunner::new().stdout("uname", &["-r"]);
@@ -171,12 +183,10 @@ fn cmd_baseline(args: &[String]) -> Result<()> {
 
     // --- Optional JSON export ---
     if let Some(path) = json_path {
-        let path = path
-            .unwrap_or_else(|| format!("baseline-{}.json", baseline.ts.format("%Y%m%dT%H%M%SZ")));
         let json = serde_json::to_string_pretty(&baseline)
             .map_err(|e| anyhow::anyhow!("serialize baseline: {e}"))?;
         std::fs::write(&path, json)?;
-        println!("\n{} {}", "baseline written:".bold(), path.bold());
+        println!("\n{} {}", "baseline written:".bold(), path.display().bold());
     }
 
     Ok(())
@@ -203,6 +213,92 @@ fn which_ok(cmd: &str) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Full battery (PLAN §4.1): baseline → live monitor under the user's
+/// workload → M3 analysis + verdict, chained in one run.
+fn cmd_battery() -> Result<()> {
+    println!("Running the full battery: baseline → monitor → analysis.\n");
+    let baseline_path = PathBuf::from(format!("baseline-{}.json", model::stamp()));
+    run_baseline(Some(baseline_path.clone()))?;
+
+    let monitor = inquire::Confirm::new(
+        "Start the live monitor now? (run your CUDA workload; press m on each black screen, q to stop)",
+    )
+    .with_default(true)
+    .prompt()?;
+    if !monitor {
+        println!(
+            "{}",
+            format!(
+                "run the monitor under the workload, then: nvidia-debug analyze --baseline {}",
+                baseline_path.display()
+            )
+            .dimmed()
+        );
+        return Ok(());
+    }
+    let session = monitor::run_monitor(monitor::MonitorOptions {
+        duration_secs: None,
+        jsonl: None,
+        workload: None,
+        interval_ms: 100,
+    })?;
+    let (analysis, loaded) = analysis::run_analysis(&session, Some(&baseline_path))?;
+    analysis::print_report(&analysis, &loaded);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// analyze subcommand (M3)
+// ---------------------------------------------------------------------------
+
+fn cmd_analyze(args: &[String]) -> Result<()> {
+    let mut session: Option<String> = None;
+    let mut baseline: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--baseline" => {
+                i += 1;
+                baseline = args.get(i).cloned();
+            }
+            a if a.starts_with('-') => anyhow::bail!("unknown analyze argument: {a}"),
+            a if session.is_none() => session = Some(a.to_string()),
+            a => anyhow::bail!("unexpected analyze argument: {a}"),
+        }
+        i += 1;
+    }
+    let session_path = match session {
+        Some(p) => PathBuf::from(p),
+        None => find_latest_session()?,
+    };
+    let baseline_path = baseline.map(PathBuf::from);
+    let (analysis, loaded) = analysis::run_analysis(&session_path, baseline_path.as_deref())?;
+    analysis::print_report(&analysis, &loaded);
+    Ok(())
+}
+
+/// The newest `monitor-*.json` in the working directory (by mtime).
+fn find_latest_session() -> Result<PathBuf> {
+    let mut best: Option<(PathBuf, Option<std::time::SystemTime>)> = None;
+    for entry in std::fs::read_dir(".")? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("monitor-") && name.ends_with(".json") {
+            // `Option` ordering: a missing mtime sorts below any real one.
+            let mtime = entry.metadata().and_then(|m| m.modified()).ok();
+            if best.as_ref().is_none_or(|(_, m)| mtime > *m) {
+                best = Some((path, mtime));
+            }
+        }
+    }
+    best.map(|(p, _)| p).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no monitor session found; run `nvidia-debug monitor` first, or pass a session path to `analyze`"
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +341,7 @@ fn cmd_monitor(args: &[String]) -> Result<()> {
         }
         i += 1;
     }
-    monitor::run_monitor(opts)
+    monitor::run_monitor(opts).map(|_| ())
 }
 
 fn ask_timeline() -> Result<TimelineAnswers> {
@@ -591,7 +687,7 @@ fn print_baseline_table(b: &Baseline, results: &[(String, ProbeResult)]) {
     println!();
     println!(
         "{}",
-        "next: run `nvidia-debug monitor` under the real workload (scoring lands in M3, PLAN.md §11)".dimmed()
+        "next: run `nvidia-debug monitor` under the real workload, then `nvidia-debug analyze` (PLAN §11)".dimmed()
     );
 }
 

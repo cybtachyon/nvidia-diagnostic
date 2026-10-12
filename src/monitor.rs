@@ -3,7 +3,7 @@
 //! moment, the tool auto-detects driver resets, and everything is written
 //! to a JSONL stream plus a small session sidecar for M3 analysis.
 
-use crate::model::{FailureMarker, MarkerKind, TelemetrySample, XidEvent, now};
+use crate::model::{FailureMarker, MarkerKind, TelemetrySample, XidEvent, now, stamp};
 use crate::telemetry::sampler;
 use crate::telemetry::sampler::{LogSource, SamplerConfig, SamplerEvent, detect_log_source};
 use crate::util::cmd::CommandRunner;
@@ -23,7 +23,8 @@ pub struct MonitorOptions {
     pub interval_ms: u64,
 }
 
-pub fn run_monitor(opts: MonitorOptions) -> anyhow::Result<()> {
+/// Run the monitor; returns the session sidecar path (the M3 analysis input).
+pub fn run_monitor(opts: MonitorOptions) -> anyhow::Result<PathBuf> {
     let jsonl = opts
         .jsonl
         .clone()
@@ -262,7 +263,11 @@ pub fn run_monitor(opts: MonitorOptions) -> anyhow::Result<()> {
     );
     println!("{} {}", "telemetry:".dimmed(), jsonl.display());
 
-    let sidecar = format!("monitor-{}.json", stamp());
+    let sidecar_path = PathBuf::from(format!("monitor-{}.json", stamp()));
+    let sidecar = sidecar_path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let report = json!({
         "started": started,
         "ended": ended,
@@ -274,14 +279,10 @@ pub fn run_monitor(opts: MonitorOptions) -> anyhow::Result<()> {
         "xid_source": log_source.map(|s| s.name().to_string()),
         "interval_ms": opts.interval_ms,
     });
-    std::fs::write(&sidecar, serde_json::to_string_pretty(&report)?)?;
+    std::fs::write(&sidecar_path, serde_json::to_string_pretty(&report)?)?;
     println!("{} {}", "session written:".dimmed(), sidecar.bold());
 
-    Ok(())
-}
-
-fn stamp() -> String {
-    now().format("%Y%m%dT%H%M%SZ").to_string()
+    Ok(sidecar_path)
 }
 
 fn format_duration(d: chrono::Duration) -> String {

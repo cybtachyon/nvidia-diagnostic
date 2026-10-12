@@ -103,11 +103,14 @@ src/
 │                      # 1 s incremental Xid scan; 2 s lspci link-state poll
 ├── events/
 │   └── xid.rs         # regex parser for "NVRM: Xid (PCI:xx:00.0) <id>" + NVRM reset lines
+│                      # (BDF: short `01:00.0` or domain-prefixed `0000:01:00`)
 ├── workload.rs        # spawn user workload / stress command, capture exit, live PIDs
+├── analysis.rs        # M3: session load, 10 s pre-window correlation, §6 evidence
 ├── experiments.rs     # definitions + guided steps for X1..X8 (§5.5)
-├── score.rs           # Evidence -> hypothesis scoring (§6)
+├── score.rs           # M3: §6 weight table, Evidence -> ranked verdict, printout
 ├── report.rs          # serde JSON report + owo-colors terminal summary
-└── model.rs           # Baseline, TelemetrySample, XidEvent, FailureMarker, Evidence, Verdict
+└── model.rs           # Baseline, TelemetrySample, XidEvent, FailureMarker,
+                       # FailureCorrelation, Evidence, Verdict, Analysis
 ```
 
 New dependencies (add to `Cargo.toml`): `serde` + `serde_json` (report), `chrono` (timestamps), `anyhow` (errors), `regex` (parsing). Keep `inquire`, `indicatif`, `owo-colors` as-is. No CUDA dependency in the main crate — the workload is a user-supplied external command (keeps the build light and the tool portable).
@@ -257,8 +260,8 @@ Each chunk below is self-contained and can be started at any point; recommended 
 
 - [x] **M1** — skeleton & baseline: deps, `util/cmd.rs`, `probe/*` (Stage 0), `model.rs`, colored baseline table
 - [x] **M2** — monitor: `telemetry/sampler.rs` (JSONL), `events/xid.rs` parser, `m`-key marker, reset detection
-- [ ] **M3** — analysis & scoring: pre-window correlation, `score.rs` (§6 table), verdict printout
+- [x] **M3** — analysis & scoring: `analysis.rs` (session load, 10 s pre-window correlation, ±2 s Xid attribution, §6 evidence), `score.rs` (§6 weight table, ranked verdict, confidence + discriminating experiment), `analyze` subcommand, full-battery flow (baseline → monitor → analyze)
 - [ ] **M4** — experiments & report: `experiments.rs` guided flow, `report.rs` JSON export, `report` subcommand
 - [ ] **M5** — polish: `indicatif` bars, README, multi-GPU guardrail, edge cases (missing tools, no root)
 
-Current pointer: **M3** (M2 landed: `telemetry/sampler.rs` 10 Hz JSONL + 1 s Xid scan + 2 s link poll (lspci, with world-readable sysfs `current_link_*` fallback for non-root), `events/xid.rs` incremental scanner (dedup, reset-line detect), `workload.rs` (spawn/track user CUDA cmd), `monitor.rs` (`m`/`q`/Ctrl-C raw-TTY key loop, HUD, `monitor-*.json` session sidecar); `libc` dep added for termios; 16 unit tests; live-validated on the 5090: 10 Hz sampling, journalctl Xid source (dmesg restricted), `m`-mark → sidecar, workload spawn/exit, Gen5 x16 link via sysfs).
+Current pointer: **M4** (M3 landed: `analysis.rs` + `score.rs` + `analyze` subcommand; 30 unit tests. The 2026-10-12 07:08 hard-reset crash (Xid 79 + 154, from `journalctl -k -b -1`) drove two parser fixes and is kept as a regression fixture `tests/fixtures/crash-20261012.session.json`: (1) `XID_RE` now accepts the domain-prefixed BDF `0000:01:00` (no `.0` function) and the `:` after `)` in newer driver lines; (2) Xid 154 (recovery action → OS Reboot) is classified with the bus-fall-off class and reads as a reset line. `analyze` on the crash session ranks **12VHPWR / PCIe connector** first (+3) and suggests X3 (reseat), matching §2/§3. Journal Xid timestamps (year-less) parse with the current year assumed; dmesg `-T` lines carry the year.)

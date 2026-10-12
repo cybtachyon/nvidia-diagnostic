@@ -9,8 +9,12 @@ use crate::model::XidEvent;
 use regex::Regex;
 use std::collections::HashSet;
 
-/// `NVRM: Xid (PCI:01:00.0) 79`
-pub const XID_RE: &str = r"NVRM: Xid \(PCI:([0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.\d+)\)\s+(\d+)";
+/// `NVRM: Xid (PCI:01:00.0) 79` and `NVRM: Xid (PCI:0000:01:00): 79`.
+/// The BDF appears in three forms across driver versions: short
+/// `bus:dev.func`, domain-prefixed `domain:bus:dev`, and domain-prefixed
+/// with function. The `:` after the closing paren is present in newer
+/// driver lines (observed in the 2026-10-12 crash log).
+pub const XID_RE: &str = r"NVRM: Xid \(PCI:([0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-9a-fA-F]|[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}(?:\.[0-9a-fA-F])?)\)\s*:?\s+(\d+)";
 /// dmesg -T: `[Thu Oct 12 01:23:45 2025]`
 const TS_DMESG_RE: &str = r"^\[([A-Z][a-z]{2} [A-Z][a-z]{2} \d+ \d{2}:\d{2}:\d{2} \d{4})\]";
 /// journalctl -k: `Oct 12 01:23:45 host kernel:`
@@ -28,8 +32,10 @@ const RESET_PATTERNS: &[&str] = &[
 ];
 
 /// True when a kernel-log line looks like a driver-level GPU reset.
+/// Xid 154 (recovery action changed to OS Reboot) is the driver's
+/// declaration that a reboot is required; it always follows a fatal Xid.
 pub fn is_reset_line(line: &str, xid_id: Option<u32>) -> bool {
-    if xid_id == Some(79) {
+    if matches!(xid_id, Some(79) | Some(154)) {
         return true;
     }
     let lower = line.to_lowercase();
@@ -210,6 +216,21 @@ mod tests {
         assert!(is_reset_line("NVRM: GPU 0000:01:00.0 is being reset", None));
         assert!(is_reset_line("nvrm: reinit adapter after fault", None));
         assert!(!is_reset_line("NVRM: Xid (PCI:01:00.0) 63", None));
+    }
+
+    #[test]
+    fn parses_real_crash_lines_domain_bdf() {
+        // Captured from the 2026-10-12 hard-reset crash on the test machine.
+        let (_, events) = parse_nvrm_lines([
+            "Oct 12 07:08:38 samhostc kernel: NVRM: Xid (PCI:0000:01:00): 79, GPU has fallen off the bus.",
+            "Oct 12 07:08:38 samhostc kernel: NVRM: Xid (PCI:0000:01:00): 154, GPU recovery action changed from 0x0 (None) to 0x2 (OS Reboot)",
+        ]);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].id, 79);
+        assert_eq!(events[0].bdf.as_deref(), Some("0000:01:00"));
+        assert_eq!(events[0].ts.as_deref(), Some("Oct 12 07:08:38"));
+        assert_eq!(events[1].id, 154);
+        assert!(is_reset_line(events[1].raw.as_str(), Some(events[1].id)));
     }
 
     #[test]
