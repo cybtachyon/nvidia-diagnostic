@@ -97,11 +97,10 @@ fn run_sampler(
 
     // Seed the Xid scanner with the current kernel-log tail so the 1 s
     // scans only report lines that appear *during* the monitor run.
-    if let Some(source) = &source {
-        if let Some(lines) = fetch_kernel_log(&runner, source) {
+    if let Some(source) = &source
+        && let Some(lines) = fetch_kernel_log(&runner, source) {
             drop(scanner.scan(lines.iter().map(String::as_str)));
         }
-    }
 
     let mut last_link: Option<(u8, u8)> = None;
     let mut last_link_poll = Instant::now() - Duration::from_secs(2);
@@ -123,12 +122,11 @@ fn run_sampler(
                 let mut sample = parse_sample_row(row, now());
                 if tick - last_link_poll >= Duration::from_secs(2) {
                     last_link_poll = tick;
-                    if let Some(b) = &bdf {
-                        if let Some(link) = poll_link(&runner, b) {
+                    if let Some(b) = &bdf
+                        && let Some(link) = poll_link(&runner, b) {
                             last_link = Some(link);
                             let _ = tx.send(SamplerEvent::Link(Some(link)));
                         }
-                    }
                 }
                 sample.pcie_link = last_link;
                 if let Ok(line) = serde_json::to_string(&sample) {
@@ -158,13 +156,12 @@ fn run_sampler(
         // --- 1 s incremental Xid scan ---
         if tick - last_xid_scan >= Duration::from_secs(1) {
             last_xid_scan = tick;
-            if let Some(source) = &source {
-                if let Some(lines) = fetch_kernel_log(&runner, source) {
+            if let Some(source) = &source
+                && let Some(lines) = fetch_kernel_log(&runner, source) {
                     for sl in scanner.scan(lines.iter().map(String::as_str)) {
                         emit_scanned(&tx, sl);
                     }
                 }
-            }
         }
 
         let elapsed = tick.elapsed();
@@ -299,8 +296,8 @@ pub fn decode_throttle_bits(raw: Option<u64>) -> Vec<(String, String)> {
 fn poll_link(r: &CommandRunner, bdf_full: &str) -> Option<(u8, u8)> {
     let bdf_short = shorten_bdf(bdf_full);
     let out = r.run("lspci", &["-vvv", "-s", &bdf_short]);
-    if out.ok {
-        if let Some(link) = out
+    if out.ok
+        && let Some(link) = out
             .stdout
             .lines()
             .find(|l| l.contains("LnkSta:"))
@@ -308,7 +305,6 @@ fn poll_link(r: &CommandRunner, bdf_full: &str) -> Option<(u8, u8)> {
         {
             return Some(link);
         }
-    }
     // sysfs uses a 4-digit PCI domain; nvidia-smi reports 8. Split on the
     // FIRST colon (domain:bus:dev.func has two of them).
     let (domain, rest) = bdf_full.split_once(':').unwrap_or(("", bdf_full));
@@ -317,7 +313,7 @@ fn poll_link(r: &CommandRunner, bdf_full: &str) -> Option<(u8, u8)> {
     let speed = read_file_lossy(&format!("{base}/current_link_speed"))?;
     let width = read_file_lossy(&format!("{base}/current_link_width"))?;
     // `current_link_speed` is `32.0 GT/s PCIe` — take the leading number.
-    let speed: f64 = speed.trim().split_whitespace().next()?.parse().ok()?;
+    let speed: f64 = speed.split_whitespace().next()?.parse().ok()?;
     let width: u8 = width.trim().parse().ok()?;
     gen_from_gts(speed).map(|g| (g, width))
 }

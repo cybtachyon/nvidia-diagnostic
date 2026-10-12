@@ -94,10 +94,7 @@ fn interactive_menu() -> Result<()> {
 
 fn cmd_baseline(args: &[String]) -> Result<()> {
     // `--json [PATH]`
-    let json_path = match args.iter().position(|a| a == "--json") {
-        Some(i) => Some(args.get(i + 1).filter(|a| !a.starts_with('-')).cloned()),
-        None => None,
-    };
+    let json_path = args.iter().position(|a| a == "--json").map(|i| args.get(i + 1).filter(|a| !a.starts_with('-')).cloned());
 
     // --- Preflight (PLAN §4.1 step 1) ---
     let is_root = euid_is_zero();
@@ -538,14 +535,14 @@ fn print_baseline_table(b: &Baseline, results: &[(String, ProbeResult)]) {
                 label("(none)"),
                 format!("no Xid events readable — {r}").yellow()
             ),
-            None => println!("{}{}", label("(none)"), "no Xid events in kernel history"),
+            None => println!("{}no Xid events in kernel history", label("(none)")),
         }
     } else {
         for e in &b.xid_history {
             let msg = e
                 .raw
                 .strip_prefix('[')
-                .and_then(|rest| rest.splitn(2, ']').nth(1))
+                .and_then(|rest| rest.split_once(']').map(|x| x.1))
                 .unwrap_or(&e.raw)
                 .trim();
             println!(

@@ -144,7 +144,7 @@ pub fn run_monitor(opts: MonitorOptions) -> anyhow::Result<()> {
                         x.bdf.as_deref().unwrap_or("?"),
                         x.raw
                             .strip_prefix('[')
-                            .and_then(|r| r.splitn(2, ']').nth(1))
+                            .and_then(|r| r.split_once(']').map(|x| x.1))
                             .unwrap_or(&x.raw)
                             .trim()
                             .dimmed()
@@ -175,17 +175,15 @@ pub fn run_monitor(opts: MonitorOptions) -> anyhow::Result<()> {
         }
 
         // --- Workload exit note (once) ---
-        if !workload_done {
-            if let Some(w) = workload.as_mut() {
-                if w.poll().is_some() {
+        if !workload_done
+            && let Some(w) = workload.as_mut()
+                && w.poll().is_some() {
                     workload_done = true;
                     println!(
                         "\n{}",
                         "note: workload exited — monitoring continues (q to stop)".yellow()
                     );
                 }
-            }
-        }
 
         // --- HUD / duration / stop conditions ---
         let elapsed = start_time.elapsed();
@@ -206,7 +204,7 @@ pub fn run_monitor(opts: MonitorOptions) -> anyhow::Result<()> {
             if std::io::stdout().is_terminal() {
                 print!("\r{}", hud_line(&latest, &xids, &markers, link, elapsed.as_secs()));
                 let _ = std::io::stdout().flush();
-            } else if elapsed.as_secs() % 5 == 0 {
+            } else if elapsed.as_secs().is_multiple_of(5) {
                 println!("{}", hud_line(&latest, &xids, &markers, link, elapsed.as_secs()));
             }
         }
@@ -220,12 +218,11 @@ pub fn run_monitor(opts: MonitorOptions) -> anyhow::Result<()> {
             "pid": w.pid(),
         })
     });
-    if let Some(w) = workload.as_mut() {
-        if w.poll().is_none() {
+    if let Some(w) = workload.as_mut()
+        && w.poll().is_none() {
             w.kill();
             println!("{}", "workload stopped".dimmed());
         }
-    }
     let ended = now();
     drop(tty);
 

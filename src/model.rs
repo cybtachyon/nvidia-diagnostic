@@ -147,16 +147,13 @@ pub struct FailureMarker {
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default)]
 pub enum MarkerKind {
+    #[default]
     UserMark,
     DetectedReset,
 }
 
-impl Default for MarkerKind {
-    fn default() -> Self {
-        MarkerKind::UserMark
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Stage 3/5 — scoring & verdict
@@ -165,7 +162,9 @@ impl Default for MarkerKind {
 #[derive(
     Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord,
 )]
+#[derive(Default)]
 pub enum Suspect {
+    #[default]
     Driver,
     Bios,
     PcieConnector,
@@ -174,11 +173,6 @@ pub enum Suspect {
     Cooling,
 }
 
-impl Default for Suspect {
-    fn default() -> Self {
-        Suspect::Driver
-    }
-}
 
 impl std::fmt::Display for Suspect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

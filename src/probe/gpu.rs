@@ -163,15 +163,14 @@ fn deep_state(r: &crate::util::cmd::CommandRunner) -> (Option<u32>, Vec<(String,
             in_throttle = false;
             continue;
         }
-        if in_throttle {
-            if let Some((name, status)) = t.split_once(':') {
+        if in_throttle
+            && let Some((name, status)) = t.split_once(':') {
                 let name = name.trim();
                 let status = status.trim();
                 if !name.is_empty() && !status.is_empty() {
                     throttle_reasons.push((name.to_string(), status.to_string()));
                 }
             }
-        }
     }
 
     // ECC state: "ECC Mode" → "Current : N/A | Supported | Enabled".
@@ -183,13 +182,12 @@ fn deep_state(r: &crate::util::cmd::CommandRunner) -> (Option<u32>, Vec<(String,
             in_ecc_mode = true;
             continue;
         }
-        if in_ecc_mode {
-            if let Some((_, v)) = t.split_once(':') {
+        if in_ecc_mode
+            && let Some((_, v)) = t.split_once(':') {
                 let v = v.trim();
                 ecc = (v != "N/A").then(|| v.to_string());
                 break;
             }
-        }
     }
 
     (max_op_temp_c, throttle_reasons, ecc)
