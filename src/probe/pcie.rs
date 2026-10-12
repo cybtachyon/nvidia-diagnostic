@@ -9,7 +9,9 @@ use serde_json::json;
 pub struct PcieProbe;
 
 /// Map a PCIe speed in GT/s to a generation number.
-fn gen_from_gts(speed: f64) -> Option<u8> {
+/// Public so the Stage-1 monitor can decode the sysfs
+/// `current_link_speed` fallback (non-root link state).
+pub fn gen_from_gts(speed: f64) -> Option<u8> {
     match speed {
         2.5 => Some(1),
         5.0 => Some(2),
@@ -23,7 +25,8 @@ fn gen_from_gts(speed: f64) -> Option<u8> {
 
 
 /// Parse `Speed 32GT/s, Width x16`-style text from a LnkCap/LnkSta line.
-fn parse_speed_width(line: &str) -> Option<(u8, u8)> {
+/// Public so the Stage-1 monitor can poll LnkSta every 2 s (PLAN §5).
+pub fn parse_link_line(line: &str) -> Option<(u8, u8)> {
     let re = Regex::new(r"Speed\s+(\d+(?:\.\d+)?)\s*GT/s.*?Width\s+x(\d+)").ok()?;
     let caps = re.captures(line)?;
     let speed: f64 = caps.get(1)?.as_str().parse().ok()?;
@@ -77,11 +80,11 @@ impl Probe for PcieProbe {
         let lnk_cap = text
             .lines()
             .find(|l| l.contains("LnkCap:"))
-            .and_then(parse_speed_width);
+            .and_then(parse_link_line);
         let lnk_sta = text
             .lines()
             .find(|l| l.contains("LnkSta:"))
-            .and_then(parse_speed_width);
+            .and_then(parse_link_line);
         if lnk_cap.is_none() && lnk_sta.is_none() {
             return ProbeResult::Degraded {
                 reason: if access_denied {
@@ -144,15 +147,15 @@ mod tests {
     #[test]
     fn parses_link_cap_and_sta() {
         assert_eq!(
-            parse_speed_width("LnkCap:\tSpeed 32GT/s, Width x16, ASPM L1"),
+            parse_link_line("LnkCap:\tSpeed 32GT/s, Width x16, ASPM L1"),
             Some((5, 16))
         );
         assert_eq!(
-            parse_speed_width("LnkSta:\tSpeed 16GT/s (downgraded), Width x8"),
+            parse_link_line("LnkSta:\tSpeed 16GT/s (downgraded), Width x8"),
             Some((4, 8))
         );
-        assert_eq!(parse_speed_width("LnkSta: Speed 2.5GT/s, Width x1"), Some((1, 1)));
-        assert_eq!(parse_speed_width("no link info here"), None);
+        assert_eq!(parse_link_line("LnkSta: Speed 2.5GT/s, Width x1"), Some((1, 1)));
+        assert_eq!(parse_link_line("no link info here"), None);
     }
 
     #[test]

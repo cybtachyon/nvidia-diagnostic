@@ -6,6 +6,7 @@ target/
 
 # nvidia-debug output artifacts
 baseline-*.json
+monitor-*.json
 report-*.json
 telemetry-*.jsonl
 

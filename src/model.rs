@@ -130,6 +130,9 @@ pub struct TelemetrySample {
     pub clock_sm: Option<u32>,
     pub fan_pct: Option<u32>,
     pub throttle_reasons: Vec<(String, String)>,
+    /// Raw `clocks_throttle_reasons.active` bitmask (10 Hz CSV source; the
+    /// decoded names in `throttle_reasons` can only cover known bits).
+    pub throttle_reasons_raw: Option<u64>,
     pub util_gpu: Option<u32>,
     pub util_mem: Option<u32>,
     pub pcie_link: Option<(u8, u8)>,

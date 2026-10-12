@@ -1,10 +1,15 @@
 //! `nvidia-debug` — reproducible root-cause diagnosis for RTX 5090 context
 //! loss (PLAN §4.1). M1: subcommand dispatch, interactive menu, Stage-0
-//! baseline snapshot and the colored baseline table.
+//! baseline snapshot and the colored baseline table. M2: live telemetry
+//! monitor (`monitor` subcommand).
 
+mod events;
 mod model;
+mod monitor;
 mod probe;
+mod telemetry;
 mod util;
+mod workload;
 
 use anyhow::Result;
 use chrono::DateTime;
@@ -23,7 +28,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("baseline") => cmd_baseline(&args[1..]),
-        Some("monitor") => not_yet("monitor", "M2"),
+        Some("monitor") => cmd_monitor(&args[1..]),
         Some("experiment") => not_yet("experiment", "M4"),
         Some("report") => not_yet("report", "M4"),
         Some(a) if a == "--help" || a == "-h" => {
@@ -48,7 +53,10 @@ Usage:
   nvidia-debug                  interactive menu
   nvidia-debug baseline         preflight + Stage-0 baseline snapshot + colored table
                                 (--json [PATH] also writes the baseline as JSON)
-  nvidia-debug monitor          live telemetry monitor (M2)
+  nvidia-debug monitor          live telemetry monitor: 10 Hz JSONL, 1 s Xid
+                                scan, `m` marks black screens, auto reset detect
+                                [--duration N] [--jsonl PATH] [--interval MS]
+                                [--workload CMD [ARGS...]]
   nvidia-debug experiment <N>   rerun after isolation experiment N (M4)
   nvidia-debug report           view / export previous report (M4)
   nvidia-debug --help           this help"
@@ -70,10 +78,10 @@ fn interactive_menu() -> Result<()> {
     let choice = inquire::Select::new("What do you want to do?", items.clone()).prompt()?;
     match choice {
         "Full diagnostic battery (recommended)" => {
-            println!("Running the full battery — Stage 0 baseline now (monitor/analysis land in M2/M3).\n");
+            println!("Running the full battery — Stage 0 baseline now (analysis lands in M3; run `monitor` under the workload).\n");
             cmd_baseline(&[])
         }
-        "Monitor only" => not_yet("monitor", "M2"),
+        "Monitor only" => cmd_monitor(&[]),
         "Rerun an isolation experiment" => not_yet("experiment", "M4"),
         "View / export previous report" => not_yet("report", "M4"),
         _ => unreachable!(),
@@ -182,6 +190,52 @@ fn which_ok(cmd: &str) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// monitor subcommand
+// ---------------------------------------------------------------------------
+
+fn cmd_monitor(args: &[String]) -> Result<()> {
+    let mut opts = monitor::MonitorOptions {
+        duration_secs: None,
+        jsonl: None,
+        workload: None,
+        interval_ms: 100,
+    };
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--duration" => {
+                i += 1;
+                opts.duration_secs = args.get(i).and_then(|s| s.parse().ok());
+            }
+            "--jsonl" => {
+                i += 1;
+                opts.jsonl = args.get(i).map(std::path::PathBuf::from);
+            }
+            "--interval" => {
+                i += 1;
+                opts.interval_ms = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(100);
+            }
+            // Everything after `--workload` is the workload command.
+            "--workload" => {
+                i += 1;
+                let rest: Vec<String> = args[i..].to_vec();
+                if rest.is_empty() {
+                    anyhow::bail!("--workload needs a command");
+                }
+                opts.workload = Some(rest);
+                i = args.len();
+            }
+            other => anyhow::bail!("unknown monitor argument: {other}"),
+        }
+        i += 1;
+    }
+    monitor::run_monitor(opts)
 }
 
 fn ask_timeline() -> Result<TimelineAnswers> {
@@ -526,7 +580,7 @@ fn print_baseline_table(b: &Baseline, results: &[(String, ProbeResult)]) {
     println!();
     println!(
         "{}",
-        "next: run under the real workload — `monitor` + scoring land in M2/M3 (PLAN.md §11)".dimmed()
+        "next: run `nvidia-debug monitor` under the real workload (scoring lands in M3, PLAN.md §11)".dimmed()
     );
 }
 

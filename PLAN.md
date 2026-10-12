@@ -256,9 +256,9 @@ Error-handling policy: probes never abort the run — a failed/missing command r
 Each chunk below is self-contained and can be started at any point; recommended order is M1→M5, but M2+ only need `model.rs`/`util/cmd.rs` from M1. Check off as work lands.
 
 - [x] **M1** — skeleton & baseline: deps, `util/cmd.rs`, `probe/*` (Stage 0), `model.rs`, colored baseline table
-- [ ] **M2** — monitor: `telemetry/sampler.rs` (JSONL), `events/xid.rs` parser, `m`-key marker, reset detection
+- [x] **M2** — monitor: `telemetry/sampler.rs` (JSONL), `events/xid.rs` parser, `m`-key marker, reset detection
 - [ ] **M3** — analysis & scoring: pre-window correlation, `score.rs` (§6 table), verdict printout
 - [ ] **M4** — experiments & report: `experiments.rs` guided flow, `report.rs` JSON export, `report` subcommand
 - [ ] **M5** — polish: `indicatif` bars, README, multi-GPU guardrail, edge cases (missing tools, no root)
 
-Current pointer: **M2** (M1 landed: deps, `util/cmd.rs`, `probe/{system,bios,gpu,pcie,logs}`, `model.rs`, `baseline` subcommand + interactive menu + colored table; 7 unit tests for the Xid/lspci/CSV parsers).
+Current pointer: **M3** (M2 landed: `telemetry/sampler.rs` 10 Hz JSONL + 1 s Xid scan + 2 s link poll (lspci, with world-readable sysfs `current_link_*` fallback for non-root), `events/xid.rs` incremental scanner (dedup, reset-line detect), `workload.rs` (spawn/track user CUDA cmd), `monitor.rs` (`m`/`q`/Ctrl-C raw-TTY key loop, HUD, `monitor-*.json` session sidecar); `libc` dep added for termios; 16 unit tests; live-validated on the 5090: 10 Hz sampling, journalctl Xid source (dmesg restricted), `m`-mark → sidecar, workload spawn/exit, Gen5 x16 link via sysfs).
