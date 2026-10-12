@@ -8,6 +8,7 @@ use crate::telemetry::sampler;
 use crate::telemetry::sampler::{LogSource, SamplerConfig, SamplerEvent, detect_log_source};
 use crate::util::cmd::CommandRunner;
 use crate::workload::Workload;
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use owo_colors::OwoColorize;
 use serde_json::json;
 use std::io::{IsTerminal, Write};
@@ -86,6 +87,12 @@ pub fn run_monitor(opts: MonitorOptions) -> anyhow::Result<PathBuf> {
         )
         .dimmed()
     );
+
+    // Stress-window progress bar (PLAN §7 M5): determinate over --duration,
+    // an elapsed clock otherwise. Routed to stderr so it does not clobber the
+    // stdout HUD / event stream.
+    let progress = start_progress(opts.duration_secs);
+    let mut last_bar = Instant::now();
 
     let mut markers: Vec<FailureMarker> = vec![];
     let mut xids: Vec<XidEvent> = vec![];
@@ -185,6 +192,11 @@ pub fn run_monitor(opts: MonitorOptions) -> anyhow::Result<PathBuf> {
 
         // --- HUD / duration / stop conditions ---
         let elapsed = start_time.elapsed();
+        // Throttle the progress-bar update to 4 Hz (the loop ticks ~10 Hz).
+        if Instant::now() >= last_bar + Duration::from_millis(250) {
+            last_bar = Instant::now();
+            update_progress(&progress, opts.duration_secs, elapsed.as_secs());
+        }
         if opts
             .duration_secs
             .is_some_and(|d| elapsed >= Duration::from_secs(d))
@@ -213,6 +225,8 @@ pub fn run_monitor(opts: MonitorOptions) -> anyhow::Result<PathBuf> {
             }
         }
     }
+
+    progress.finish_and_clear();
 
     // --- Teardown ---
     handle.stop();
@@ -294,6 +308,41 @@ fn count_lines(path: &std::path::Path) -> u64 {
     std::fs::read_to_string(path)
         .map(|s| s.lines().count() as u64)
         .unwrap_or(0)
+}
+
+/// Create the stress-window progress bar (PLAN §7 M5). A fixed `--duration`
+/// gives a determinate bar that fills over the window; no duration gives an
+/// elapsed clock. Both render on stderr, away from the stdout HUD.
+fn start_progress(duration_secs: Option<u64>) -> ProgressBar {
+    match duration_secs {
+        Some(total) => {
+            let bar = ProgressBar::new(total);
+            bar.set_style(
+                ProgressStyle::with_template("{bar:24.cyan} {pos:>4}/{len}s {msg}")
+                    .expect("progress template"),
+            );
+            bar.set_draw_target(ProgressDrawTarget::stderr());
+            bar.set_message("monitoring");
+            bar
+        }
+        None => {
+            let bar = ProgressBar::no_length();
+            bar.set_style(
+                ProgressStyle::with_template("{spinner:.green} {msg}").expect("progress template"),
+            );
+            bar.set_draw_target(ProgressDrawTarget::stderr());
+            bar.enable_steady_tick(Duration::from_millis(200));
+            bar
+        }
+    }
+}
+
+/// Advance the progress bar one tick (called at ~4 Hz from the monitor loop).
+fn update_progress(bar: &ProgressBar, duration_secs: Option<u64>, elapsed_s: u64) {
+    match duration_secs {
+        Some(total) => bar.set_position(elapsed_s.min(total)),
+        None => bar.set_message(format!("monitoring · {elapsed_s}s")),
+    }
 }
 
 /// One-line HUD: latest telemetry + event counts.

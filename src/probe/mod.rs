@@ -9,6 +9,7 @@ pub mod gpu;
 pub mod logs;
 pub mod pcie;
 pub mod system;
+pub mod target;
 
 use crate::util::cmd::CommandRunner;
 use serde_json::Value;

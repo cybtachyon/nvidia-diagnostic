@@ -1,9 +1,9 @@
 //! GPU probe: `nvidia-smi` state (PLAN §5 Stage 0).
 //!
-//! Targets the single RTX 5090; if more than one GPU is visible the probe
-//! records the extra cards in the summary (full multi-GPU guardrail lands in
-//! M5).
+//! Targets the single RTX 5090. On a multi-GPU box the probe selects the card
+//! by name (`probe::target`) and records a guardrail note in the summary.
 
+use crate::probe::target::{guardrail_note, select_target_index};
 use crate::probe::{BaselineCtx, Probe, ProbeResult};
 use crate::util::cmd::{csv_fields, parse_f64, parse_u32};
 use serde_json::json;
@@ -50,17 +50,21 @@ impl Probe for GpuProbe {
             };
         }
 
-        let multi = if rows.len() > 1 {
-            Some(format!(
-                "note: {} GPUs visible — tool targets the first ({}); multi-GPU guardrail in M5",
-                rows.len(),
-                rows[0].first().and_then(|v| v.as_deref()).unwrap_or("?")
-            ))
-        } else {
-            None
-        };
+        // Select the target card by name (PLAN §7 M5 multi-GPU guardrail);
+        // the 5090 is not guaranteed to be row 0 on a multi-GPU box.
+        let names: Vec<Option<String>> = rows
+            .iter()
+            .map(|r| r.first().and_then(|v| v.clone()))
+            .collect();
+        let (index, total, matched_by_name) = select_target_index(&names);
+        let target_name = rows[index]
+            .first()
+            .and_then(|v| v.as_deref())
+            .unwrap_or("?")
+            .to_string();
+        let guard = guardrail_note(total, index, &target_name, matched_by_name);
 
-        let f = |i: usize| rows[0].get(i).and_then(|v| v.clone());
+        let f = |i: usize| rows[index].get(i).and_then(|v| v.clone());
         let name = f(0);
         let serial = f(1);
         let driver_version = f(2);
@@ -87,7 +91,7 @@ impl Probe for GpuProbe {
             temp_gpu.unwrap_or(0),
             format_power(power_draw_w),
             format_power(power_limit_w),
-            multi
+            guard
                 .as_deref()
                 .map(|n| format!("; {n}"))
                 .unwrap_or_default()
@@ -114,7 +118,7 @@ impl Probe for GpuProbe {
                 "max_op_temp_c": max_op_temp_c,
                 "throttle_reasons": throttle_reasons,
                 "ecc": ecc,
-                "multi_gpu_note": multi,
+                "multi_gpu_note": guard,
             }),
         }
     }

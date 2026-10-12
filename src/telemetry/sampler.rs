@@ -345,18 +345,10 @@ pub fn shorten_bdf(full: &str) -> String {
     }
 }
 
-/// Full-form BDF (`00000000:01:00.0`) from `nvidia-smi`.
+/// Full-form BDF (`00000000:01:00.0`) of the target card, selected by name
+/// (PLAN §7 M5 multi-GPU guardrail) so a multi-GPU box watches the 5090.
 fn resolve_bdf(r: &CommandRunner) -> Option<String> {
-    let out = r.run(
-        "nvidia-smi",
-        &["--query-gpu=pci.bus_id", "--format=csv,noheader"],
-    );
-    out.stdout_if_ok().and_then(|s| {
-        s.lines().find_map(|l| {
-            let t = l.trim();
-            (!t.is_empty()).then(|| t.to_string())
-        })
-    })
+    crate::probe::target::resolve_gpu_target(r).map(|t| t.bdf_full)
 }
 
 #[cfg(test)]

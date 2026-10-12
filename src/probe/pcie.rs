@@ -1,6 +1,7 @@
 //! PCIe probe: `lspci -vvv` — LnkCap vs LnkSta and AER counters (PLAN §5
 //! Stage 0). Link running below capability is a BIOS/PCIe-path signal.
 
+use crate::probe::target::resolve_gpu_target;
 use crate::probe::{BaselineCtx, Probe, ProbeResult};
 use crate::util::cmd::CommandRunner;
 use regex::Regex;
@@ -46,26 +47,15 @@ impl Probe for PcieProbe {
     fn run(&self, ctx: &BaselineCtx) -> ProbeResult {
         let r: &CommandRunner = &ctx.runner;
 
-        // Locate the GPU's BDF. nvidia-smi reports the full form
-        // `00000000:01:00.0`; lspci accepts the short `01:00.0`.
-        let bdf_full = match r.run(
-            "nvidia-smi",
-            &["--query-gpu=pci.bus_id", "--format=csv,noheader"],
-        ) {
-            out if out.ok => out
-                .stdout
-                .lines()
-                .next()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(String::from),
-            _ => None,
-        };
-        let Some(bdf_full) = bdf_full else {
+        // Locate the target card's BDF (PLAN §7 M5 multi-GPU guardrail).
+        // nvidia-smi reports the full form `00000000:01:00.0`; lspci accepts
+        // the short `01:00.0`.
+        let Some(target) = resolve_gpu_target(r) else {
             return ProbeResult::Degraded {
                 reason: "could not determine GPU PCI bus id (nvidia-smi unavailable?)".into(),
             };
         };
+        let bdf_full = target.bdf_full.clone();
         let bdf_short = bdf_full
             .rsplit_once(':')
             .map(|(_, rest)| rest.to_string())
@@ -122,7 +112,7 @@ impl Probe for PcieProbe {
             (Some(c), Some(s)) if s.0 < c.0 || s.1 < c.1
         );
 
-        let summary = match (&lnk_cap, &lnk_sta) {
+        let mut summary = match (&lnk_cap, &lnk_sta) {
             (Some((cg, cw)), Some((sg, sw))) if !degraded_link => {
                 format!("PCIe Gen{sg} x{sw} (cap Gen{cg} x{cw}) — at capability")
             }
@@ -131,6 +121,10 @@ impl Probe for PcieProbe {
             }
             _ => "PCIe link state unavailable".to_string(),
         };
+        // Surface the multi-GPU guardrail (PLAN §7 M5) next to the link state.
+        if let Some(note) = target.guardrail_note() {
+            summary.push_str(&format!("; {note}"));
+        }
 
         ProbeResult::Ok {
             summary,

@@ -38,6 +38,7 @@ fn main() -> Result<()> {
     match args.first().map(String::as_str) {
         Some("baseline") => cmd_baseline(&args[1..]),
         Some("monitor") => cmd_monitor(&args[1..]),
+        Some("stress") => cmd_stress(&args[1..]),
         Some("analyze") => cmd_analyze(&args[1..]),
         Some("experiment") => cmd_experiment(&args[1..]),
         Some("report") => cmd_report(&args[1..]),
@@ -68,6 +69,11 @@ Usage:
                                 scan, `m` marks black screens, auto reset detect
                                 [--duration N] [--jsonl PATH] [--interval MS]
                                 [--workload CMD [ARGS...]]
+  nvidia-debug stress <SECS>    fixed-duration stress window under the monitor
+                                (PLAN §5 Stage 2) with an `indicatif` progress
+                                bar; typically a `--workload` stress command
+                                [--workload CMD [ARGS...]] [--jsonl PATH]
+                                [--interval MS]
   nvidia-debug analyze [SESSION]
                                  M3: pre-window correlation + §6 scoring + verdict
                                  for a monitor session (defaults to the newest
@@ -95,6 +101,7 @@ fn interactive_menu() -> Result<()> {
     let items = vec![
         "Full diagnostic battery (recommended)",
         "Monitor only",
+        "Run a stress window (fixed duration)",
         "Rerun an isolation experiment",
         "View / export previous report",
     ];
@@ -102,6 +109,7 @@ fn interactive_menu() -> Result<()> {
     match choice {
         "Full diagnostic battery (recommended)" => cmd_battery(),
         "Monitor only" => cmd_monitor(&[]),
+        "Run a stress window (fixed duration)" => cmd_stress(&[]),
         "Rerun an isolation experiment" => cmd_experiment(&[]),
         "View / export previous report" => cmd_report(&[]),
         _ => unreachable!(),
@@ -125,35 +133,23 @@ fn cmd_baseline(args: &[String]) -> Result<()> {
 /// Stage-0 baseline snapshot; `json_path` (when set) also writes the
 /// baseline as JSON for the M3 analysis.
 fn run_baseline(json_path: Option<PathBuf>) -> Result<()> {
-    // --- Preflight (PLAN §4.1 step 1) ---
+    // --- Preflight (PLAN §4.1 step 1, §7 M5 edge cases: missing tools, no root) ---
     let is_root = euid_is_zero();
-    let kernel = CommandRunner::new().stdout("uname", &["-r"]);
+    let runner = CommandRunner::new();
+    let kernel = runner.stdout("uname", &["-r"]);
     println!(
-        "preflight: kernel {} · nvidia-smi {} · root {}",
+        "preflight: kernel {} · root {}",
         kernel.as_deref().unwrap_or("?").bold(),
-        if which_ok("nvidia-smi") {
-            "found".green().to_string()
-        } else {
-            "NOT FOUND".red().to_string()
-        },
         if is_root {
             "yes".green().to_string()
         } else {
             "no (root-only probes will degrade)".yellow().to_string()
         },
     );
-    if !which_ok("nvidia-smi") {
-        println!(
-            "{}",
-            "warning: nvidia-smi missing — GPU probes will degrade; install the NVIDIA driver first"
-                .yellow()
-        );
-    }
+    print_preflight_tools(&runner);
 
     // --- Stage 0: run all probes (none of them aborts the run) ---
-    let ctx = BaselineCtx {
-        runner: CommandRunner::new(),
-    };
+    let ctx = BaselineCtx { runner };
     let probes: Vec<Box<dyn Probe>> = vec![
         Box::new(SystemProbe),
         Box::new(BiosProbe),
@@ -216,14 +212,52 @@ fn euid_is_zero() -> bool {
         .is_some_and(|uid| uid == 0)
 }
 
-fn which_ok(cmd: &str) -> bool {
-    std::process::Command::new(cmd)
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+/// External tools the probes depend on, with what degrades when each is
+/// missing (PLAN §7 M5 edge cases: missing tools, no root).
+const PREFLIGHT_TOOLS: &[(&str, &str, &[&str])] = &[
+    ("nvidia-smi", "GPU state + live telemetry", &["--version"]),
+    (
+        "lspci",
+        "PCIe link state (sysfs fallback for speed/width only)",
+        &["-v"],
+    ),
+    ("dmidecode", "BIOS version (root)", &["-s", "bios-version"]),
+    ("dmesg", "kernel-log Xid scan", &["-T"]),
+    (
+        "journalctl",
+        "kernel-log Xid scan (dmesg fallback)",
+        &["-k", "--no-pager", "-n", "1"],
+    ),
+    ("modinfo", "nvidia module version", &["nvidia"]),
+    ("lsmod", "loaded nvidia modules", &[]),
+];
+
+/// A tool is present when its binary is found, regardless of exit code.
+fn tool_present(r: &CommandRunner, tool: &str, args: &[&str]) -> bool {
+    !r.run(tool, args).missing
+}
+
+/// Compact tool-availability summary: present tools in green, each missing
+/// tool with a one-line note on what degrades.
+fn print_preflight_tools(r: &CommandRunner) {
+    let mut present: Vec<&str> = vec![];
+    let mut missing: Vec<(&str, &str)> = vec![];
+    for (tool, degrade, args) in PREFLIGHT_TOOLS {
+        if tool_present(r, tool, args) {
+            present.push(tool);
+        } else {
+            missing.push((tool, degrade));
+        }
+    }
+    println!("{} {}", "tools:".dimmed(), present.join(" · ").green());
+    for (tool, degrade) in &missing {
+        println!(
+            "  {} {} — {}",
+            "missing:".dimmed(),
+            tool.red(),
+            degrade.yellow()
+        );
+    }
 }
 
 /// Full battery (PLAN §4.1): baseline → live monitor under the user's
@@ -577,6 +611,56 @@ fn cmd_monitor(args: &[String]) -> Result<()> {
         i += 1;
     }
     monitor::run_monitor(opts).map(|_| ())
+}
+
+/// Fixed-duration stress window under the monitor (PLAN §5 Stage 2, §7 M5):
+/// a thin wrapper over `monitor` that requires a duration (drives the
+/// `indicatif` progress bar) and typically a `--workload` stress command.
+fn cmd_stress(args: &[String]) -> Result<()> {
+    let mut duration: Option<u64> = None;
+    let mut workload: Option<Vec<String>> = None;
+    let mut jsonl: Option<PathBuf> = None;
+    let mut interval_ms: u64 = 100;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--workload" => {
+                i += 1;
+                let rest: Vec<String> = args[i..].to_vec();
+                if rest.is_empty() {
+                    anyhow::bail!("--workload needs a command");
+                }
+                workload = Some(rest);
+                i = args.len();
+            }
+            "--jsonl" => {
+                i += 1;
+                jsonl = args.get(i).map(std::path::PathBuf::from);
+            }
+            "--interval" => {
+                i += 1;
+                interval_ms = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(100);
+            }
+            a if !a.starts_with('-') && duration.is_none() => {
+                duration = a.parse().ok();
+            }
+            other => anyhow::bail!("unknown stress argument: {other}"),
+        }
+        i += 1;
+    }
+    let Some(duration) = duration else {
+        anyhow::bail!(
+            "usage: nvidia-debug stress <DURATION-SECS> [--workload CMD [ARGS...]] \
+             [--jsonl PATH] [--interval MS]"
+        );
+    };
+    monitor::run_monitor(monitor::MonitorOptions {
+        duration_secs: Some(duration),
+        jsonl,
+        workload,
+        interval_ms,
+    })
+    .map(|_| ())
 }
 
 fn ask_timeline() -> Result<TimelineAnswers> {
