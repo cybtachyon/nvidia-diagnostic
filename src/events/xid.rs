@@ -136,10 +136,7 @@ impl XidScanner {
     }
 
     /// Scan `lines`, returning the NVRM/Xid lines never seen before.
-    pub fn scan<'a>(
-        &mut self,
-        lines: impl IntoIterator<Item = &'a str>,
-    ) -> Vec<ScannedLine> {
+    pub fn scan<'a>(&mut self, lines: impl IntoIterator<Item = &'a str>) -> Vec<ScannedLine> {
         let mut out = Vec::new();
         for line in lines {
             let trimmed = line.trim();
@@ -170,9 +167,9 @@ mod tests {
 
     #[test]
     fn parses_xid_from_dmesg_t() {
-        let (nvrm, events) = parse_nvrm_lines(
-            ["[Thu Oct 12 01:23:45 2026] NVRM: Xid (PCI:01:00.0) 79, minor code 0x0"],
-        );
+        let (nvrm, events) = parse_nvrm_lines([
+            "[Thu Oct 12 01:23:45 2026] NVRM: Xid (PCI:01:00.0) 79, minor code 0x0",
+        ]);
         assert_eq!(nvrm.len(), 1);
         assert_eq!(events.len(), 1);
         let e = &events[0];
@@ -183,9 +180,9 @@ mod tests {
 
     #[test]
     fn parses_xid_from_journalctl() {
-        let (_, events) = parse_nvrm_lines(
-            ["Oct 12 01:23:45 host kernel: NVRM: Xid (PCI:41:00.0) 43, channel 0x0"],
-        );
+        let (_, events) = parse_nvrm_lines([
+            "Oct 12 01:23:45 host kernel: NVRM: Xid (PCI:41:00.0) 43, channel 0x0",
+        ]);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].id, 43);
         assert_eq!(events[0].bdf.as_deref(), Some("41:00.0"));
@@ -194,12 +191,10 @@ mod tests {
 
     #[test]
     fn ignores_non_xid_nvrm_lines() {
-        let (nvrm, events) = parse_nvrm_lines(
-            [
-                "Oct 12 01:12:37 host kernel: NVRM: loading NVIDIA UNIX Open Kernel Module",
-                "Oct 12 01:12:37 host kernel: something else",
-            ],
-        );
+        let (nvrm, events) = parse_nvrm_lines([
+            "Oct 12 01:12:37 host kernel: NVRM: loading NVIDIA UNIX Open Kernel Module",
+            "Oct 12 01:12:37 host kernel: something else",
+        ]);
         assert_eq!(nvrm.len(), 1);
         assert!(events.is_empty());
     }

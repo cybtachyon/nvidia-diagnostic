@@ -23,7 +23,6 @@ pub fn gen_from_gts(speed: f64) -> Option<u8> {
     }
 }
 
-
 /// Parse `Speed 32GT/s, Width x16`-style text from a LnkCap/LnkSta line.
 /// Public so the Stage-1 monitor can poll LnkSta every 2 s (PLAN §5).
 pub fn parse_link_line(line: &str) -> Option<(u8, u8)> {
@@ -49,8 +48,17 @@ impl Probe for PcieProbe {
 
         // Locate the GPU's BDF. nvidia-smi reports the full form
         // `00000000:01:00.0`; lspci accepts the short `01:00.0`.
-        let bdf_full = match r.run("nvidia-smi", &["--query-gpu=pci.bus_id", "--format=csv,noheader"]) {
-            out if out.ok => out.stdout.lines().next().map(str::trim).filter(|s| !s.is_empty()).map(String::from),
+        let bdf_full = match r.run(
+            "nvidia-smi",
+            &["--query-gpu=pci.bus_id", "--format=csv,noheader"],
+        ) {
+            out if out.ok => out
+                .stdout
+                .lines()
+                .next()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from),
             _ => None,
         };
         let Some(bdf_full) = bdf_full else {
@@ -88,7 +96,8 @@ impl Probe for PcieProbe {
         if lnk_cap.is_none() && lnk_sta.is_none() {
             return ProbeResult::Degraded {
                 reason: if access_denied {
-                    "lspci: PCIe capabilities not accessible without root (link state unknown)".into()
+                    "lspci: PCIe capabilities not accessible without root (link state unknown)"
+                        .into()
                 } else {
                     "lspci: LnkCap/LnkSta not found in output".into()
                 },
@@ -104,9 +113,7 @@ impl Probe for PcieProbe {
             .map(|l| l.trim().to_string());
 
         // Any `+` in an AER status string means a latched error bit.
-        let aer_flag = |s: &Option<String>| -> Option<bool> {
-            s.as_ref().map(|v| v.contains('+'))
-        };
+        let aer_flag = |s: &Option<String>| -> Option<bool> { s.as_ref().map(|v| v.contains('+')) };
         let ue_err = aer_flag(&aer_ue);
         let ce_err = aer_flag(&aer_ce);
 
@@ -116,12 +123,12 @@ impl Probe for PcieProbe {
         );
 
         let summary = match (&lnk_cap, &lnk_sta) {
-            (Some((cg, cw)), Some((sg, sw))) if !degraded_link => format!(
-                "PCIe Gen{sg} x{sw} (cap Gen{cg} x{cw}) — at capability"
-            ),
-            (Some((cg, cw)), Some((sg, sw))) => format!(
-                "PCIe Gen{sg} x{sw} running BELOW capability Gen{cg} x{cw} ⚠",
-            ),
+            (Some((cg, cw)), Some((sg, sw))) if !degraded_link => {
+                format!("PCIe Gen{sg} x{sw} (cap Gen{cg} x{cw}) — at capability")
+            }
+            (Some((cg, cw)), Some((sg, sw))) => {
+                format!("PCIe Gen{sg} x{sw} running BELOW capability Gen{cg} x{cw} ⚠",)
+            }
             _ => "PCIe link state unavailable".to_string(),
         };
 
@@ -154,7 +161,10 @@ mod tests {
             parse_link_line("LnkSta:\tSpeed 16GT/s (downgraded), Width x8"),
             Some((4, 8))
         );
-        assert_eq!(parse_link_line("LnkSta: Speed 2.5GT/s, Width x1"), Some((1, 1)));
+        assert_eq!(
+            parse_link_line("LnkSta: Speed 2.5GT/s, Width x1"),
+            Some((1, 1))
+        );
         assert_eq!(parse_link_line("no link info here"), None);
     }
 

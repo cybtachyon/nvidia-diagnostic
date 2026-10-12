@@ -25,11 +25,7 @@ impl Probe for GpuProbe {
 
         let out = r.run(
             "nvidia-smi",
-            &[
-                "--query-gpu",
-                QUERY,
-                "--format=csv,noheader,nounits",
-            ],
+            &["--query-gpu", QUERY, "--format=csv,noheader,nounits"],
         );
         if out.missing {
             return ProbeResult::Degraded {
@@ -126,26 +122,23 @@ impl Probe for GpuProbe {
 
 /// `nvidia-smi -q -d TEMPERATURE,PERFORMANCE,ECC` → max op temp, throttle
 /// reasons, ECC state. Best-effort: any parse miss is `None`.
-fn deep_state(r: &crate::util::cmd::CommandRunner) -> (Option<u32>, Vec<(String, String)>, Option<String>) {
-    let out = r.run(
-        "nvidia-smi",
-        &["-q", "-d", "TEMPERATURE,PERFORMANCE,ECC"],
-    );
+fn deep_state(
+    r: &crate::util::cmd::CommandRunner,
+) -> (Option<u32>, Vec<(String, String)>, Option<String>) {
+    let out = r.run("nvidia-smi", &["-q", "-d", "TEMPERATURE,PERFORMANCE,ECC"]);
     if !out.ok {
         return (None, vec![], None);
     }
     let text = out.stdout;
 
     // Max operating temp spec; 0 means the driver does not publish one.
-    let max_op_temp_c = text
-        .lines()
-        .find_map(|l| {
-            l.trim()
-                .strip_prefix("GPU Max Operating T.Limit Temp Specification")
-                .and_then(|rest| rest.split_once(':').map(|(_, v)| v.trim()))
-                .and_then(|v| v.trim_end_matches('C').trim().parse().ok())
-                .filter(|t| *t > 0)
-        });
+    let max_op_temp_c = text.lines().find_map(|l| {
+        l.trim()
+            .strip_prefix("GPU Max Operating T.Limit Temp Specification")
+            .and_then(|rest| rest.split_once(':').map(|(_, v)| v.trim()))
+            .and_then(|v| v.trim_end_matches('C').trim().parse().ok())
+            .filter(|t| *t > 0)
+    });
 
     // Throttle reasons live under "Clocks Event Reasons" (includes the
     // indented sub-reasons such as "HW Thermal Slowdown"); the section ends
@@ -163,14 +156,13 @@ fn deep_state(r: &crate::util::cmd::CommandRunner) -> (Option<u32>, Vec<(String,
             in_throttle = false;
             continue;
         }
-        if in_throttle
-            && let Some((name, status)) = t.split_once(':') {
-                let name = name.trim();
-                let status = status.trim();
-                if !name.is_empty() && !status.is_empty() {
-                    throttle_reasons.push((name.to_string(), status.to_string()));
-                }
+        if in_throttle && let Some((name, status)) = t.split_once(':') {
+            let name = name.trim();
+            let status = status.trim();
+            if !name.is_empty() && !status.is_empty() {
+                throttle_reasons.push((name.to_string(), status.to_string()));
             }
+        }
     }
 
     // ECC state: "ECC Mode" → "Current : N/A | Supported | Enabled".
@@ -182,12 +174,11 @@ fn deep_state(r: &crate::util::cmd::CommandRunner) -> (Option<u32>, Vec<(String,
             in_ecc_mode = true;
             continue;
         }
-        if in_ecc_mode
-            && let Some((_, v)) = t.split_once(':') {
-                let v = v.trim();
-                ecc = (v != "N/A").then(|| v.to_string());
-                break;
-            }
+        if in_ecc_mode && let Some((_, v)) = t.split_once(':') {
+            let v = v.trim();
+            ecc = (v != "N/A").then(|| v.to_string());
+            break;
+        }
     }
 
     (max_op_temp_c, throttle_reasons, ecc)

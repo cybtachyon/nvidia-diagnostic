@@ -16,10 +16,7 @@ impl Workload {
         let (cmd, args) = argv.split_first().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty workload argv")
         })?;
-        let child = Command::new(cmd)
-            .args(args)
-            .stdin(Stdio::null())
-            .spawn()?;
+        let child = Command::new(cmd).args(args).stdin(Stdio::null()).spawn()?;
         Ok(Self {
             cmd: argv.to_vec(),
             child,

@@ -72,11 +72,6 @@ impl CommandRunner {
         }
     }
 
-    /// Run a shell one-liner via `sh -c` (for pipelines like `dmesg | grep`).
-    pub fn run_shell(&self, shell: &str) -> CmdOutput {
-        self.run("sh", &["-c", shell])
-    }
-
     /// Convenience: trimmed stdout if the command succeeded, else `None`.
     pub fn stdout(&self, cmd: &str, args: &[&str]) -> Option<String> {
         self.run(cmd, args).stdout_if_ok()
@@ -110,7 +105,9 @@ pub fn parse_f64(s: Option<&str>) -> Option<f64> {
 
 /// Read a UTF-8 file if present (used for /etc/os-release).
 pub fn read_file_lossy(path: &str) -> Option<String> {
-    std::fs::read(path).ok().map(|b| String::from_utf8_lossy(&b).into_owned())
+    std::fs::read(path)
+        .ok()
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
 impl Default for CommandRunner {

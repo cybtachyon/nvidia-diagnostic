@@ -3,9 +3,9 @@
 //! moment, the tool auto-detects driver resets, and everything is written
 //! to a JSONL stream plus a small session sidecar for M3 analysis.
 
-use crate::model::{now, FailureMarker, MarkerKind, TelemetrySample, XidEvent};
-use crate::telemetry::sampler as sampler;
-use crate::telemetry::sampler::{detect_log_source, LogSource, SamplerConfig, SamplerEvent};
+use crate::model::{FailureMarker, MarkerKind, TelemetrySample, XidEvent, now};
+use crate::telemetry::sampler;
+use crate::telemetry::sampler::{LogSource, SamplerConfig, SamplerEvent, detect_log_source};
 use crate::util::cmd::CommandRunner;
 use crate::workload::Workload;
 use owo_colors::OwoColorize;
@@ -76,11 +76,7 @@ pub fn run_monitor(opts: MonitorOptions) -> anyhow::Result<()> {
     let started = now();
     let start_time = Instant::now();
 
-    println!(
-        "\n{} {}",
-        "monitoring →".bold(),
-        jsonl.display().bold()
-    );
+    println!("\n{} {}", "monitoring →".bold(), jsonl.display().bold());
     println!(
         "{}",
         format!(
@@ -177,13 +173,14 @@ pub fn run_monitor(opts: MonitorOptions) -> anyhow::Result<()> {
         // --- Workload exit note (once) ---
         if !workload_done
             && let Some(w) = workload.as_mut()
-                && w.poll().is_some() {
-                    workload_done = true;
-                    println!(
-                        "\n{}",
-                        "note: workload exited — monitoring continues (q to stop)".yellow()
-                    );
-                }
+            && w.poll().is_some()
+        {
+            workload_done = true;
+            println!(
+                "\n{}",
+                "note: workload exited — monitoring continues (q to stop)".yellow()
+            );
+        }
 
         // --- HUD / duration / stop conditions ---
         let elapsed = start_time.elapsed();
@@ -202,10 +199,16 @@ pub fn run_monitor(opts: MonitorOptions) -> anyhow::Result<()> {
         if Instant::now() >= last_hud + Duration::from_secs(1) {
             last_hud = Instant::now();
             if std::io::stdout().is_terminal() {
-                print!("\r{}", hud_line(&latest, &xids, &markers, link, elapsed.as_secs()));
+                print!(
+                    "\r{}",
+                    hud_line(&latest, &xids, &markers, link, elapsed.as_secs())
+                );
                 let _ = std::io::stdout().flush();
             } else if elapsed.as_secs().is_multiple_of(5) {
-                println!("{}", hud_line(&latest, &xids, &markers, link, elapsed.as_secs()));
+                println!(
+                    "{}",
+                    hud_line(&latest, &xids, &markers, link, elapsed.as_secs())
+                );
             }
         }
     }
@@ -219,17 +222,24 @@ pub fn run_monitor(opts: MonitorOptions) -> anyhow::Result<()> {
         })
     });
     if let Some(w) = workload.as_mut()
-        && w.poll().is_none() {
-            w.kill();
-            println!("{}", "workload stopped".dimmed());
-        }
+        && w.poll().is_none()
+    {
+        w.kill();
+        println!("{}", "workload stopped".dimmed());
+    }
     let ended = now();
     drop(tty);
 
     // --- Summary + sidecar (the M3 analysis input) ---
     let sample_count = count_lines(&jsonl);
-    let user_marks = markers.iter().filter(|m| m.kind == MarkerKind::UserMark).count();
-    let detected = markers.iter().filter(|m| m.kind == MarkerKind::DetectedReset).count();
+    let user_marks = markers
+        .iter()
+        .filter(|m| m.kind == MarkerKind::UserMark)
+        .count();
+    let detected = markers
+        .iter()
+        .filter(|m| m.kind == MarkerKind::DetectedReset)
+        .count();
     let xid_ids: Vec<u32> = xids.iter().map(|x| x.id).collect();
 
     println!();
@@ -244,9 +254,7 @@ pub fn run_monitor(opts: MonitorOptions) -> anyhow::Result<()> {
         if xid_ids.is_empty() {
             "none".dimmed().to_string()
         } else {
-            format!("{xid_ids:?}")
-                .red()
-                .to_string()
+            format!("{xid_ids:?}").red().to_string()
         },
         markers.len(),
         user_marks,
@@ -296,7 +304,10 @@ fn hud_line(
     elapsed: u64,
 ) -> String {
     let s = latest.as_ref();
-    let temp = s.and_then(|v| v.temp_gpu).map(|t| format!("{t}°C")).unwrap_or_else(|| "?".into());
+    let temp = s
+        .and_then(|v| v.temp_gpu)
+        .map(|t| format!("{t}°C"))
+        .unwrap_or_else(|| "?".into());
     let power = s
         .and_then(|v| v.power_draw)
         .map(|p| format!("{p:.0}W"))
@@ -371,13 +382,7 @@ impl TtyRaw {
     /// Read one key, or `None` after the 100 ms timeout.
     fn next_key(&self) -> Option<u8> {
         let mut b = [0u8; 1];
-        let n = unsafe {
-            libc::read(
-                self.fd,
-                b.as_mut_ptr() as *mut libc::c_void,
-                b.len(),
-            )
-        };
+        let n = unsafe { libc::read(self.fd, b.as_mut_ptr() as *mut libc::c_void, b.len()) };
         (n == 1).then_some(b[0])
     }
 }
@@ -415,9 +420,6 @@ extern "C" fn on_sigint(_: libc::c_int) {
 
 fn install_sigint() {
     unsafe {
-        libc::signal(
-            libc::SIGINT,
-            on_sigint as *const () as usize,
-        );
+        libc::signal(libc::SIGINT, on_sigint as *const () as usize);
     }
 }

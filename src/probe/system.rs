@@ -1,7 +1,7 @@
 //! System probe: kernel, arch, OS, nvidia kernel module (PLAN §5 Stage 0).
 
 use crate::probe::{BaselineCtx, Probe, ProbeResult};
-use crate::util::cmd::{read_file_lossy, CommandRunner};
+use crate::util::cmd::{CommandRunner, read_file_lossy};
 use serde_json::json;
 
 pub struct SystemProbe;
@@ -17,13 +17,12 @@ impl Probe for SystemProbe {
         let kernel = r.stdout("uname", &["-r"]);
         let arch = r.stdout("uname", &["-m"]);
 
-        let os = read_file_lossy("/etc/os-release")
-            .and_then(|content| {
-                content
-                    .lines()
-                    .find_map(|l| l.strip_prefix("PRETTY_NAME="))
-                    .map(|v| v.trim_matches('"').to_string())
-            });
+        let os = read_file_lossy("/etc/os-release").and_then(|content| {
+            content
+                .lines()
+                .find_map(|l| l.strip_prefix("PRETTY_NAME="))
+                .map(|v| v.trim_matches('"').to_string())
+        });
 
         // `modinfo nvidia` — version of the loaded kernel module.
         let module_version = r

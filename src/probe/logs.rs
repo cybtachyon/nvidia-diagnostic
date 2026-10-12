@@ -60,4 +60,3 @@ impl Probe for LogsProbe {
         }
     }
 }
-

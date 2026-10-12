@@ -9,10 +9,10 @@
 //!
 //! Everything it observes is streamed to the monitor over an mpsc channel.
 
-use crate::events::xid::{XidScanner, ScannedLine};
-use crate::model::{now, FailureMarker, MarkerKind, TelemetrySample, XidEvent};
+use crate::events::xid::{ScannedLine, XidScanner};
+use crate::model::{FailureMarker, MarkerKind, TelemetrySample, XidEvent, now};
 use crate::probe::pcie::{gen_from_gts, parse_link_line};
-use crate::util::cmd::{csv_fields, parse_f64, parse_u32, read_file_lossy, CommandRunner};
+use crate::util::cmd::{CommandRunner, csv_fields, parse_f64, parse_u32, read_file_lossy};
 use chrono::{DateTime, Utc};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -98,9 +98,10 @@ fn run_sampler(
     // Seed the Xid scanner with the current kernel-log tail so the 1 s
     // scans only report lines that appear *during* the monitor run.
     if let Some(source) = &source
-        && let Some(lines) = fetch_kernel_log(&runner, source) {
-            drop(scanner.scan(lines.iter().map(String::as_str)));
-        }
+        && let Some(lines) = fetch_kernel_log(&runner, source)
+    {
+        drop(scanner.scan(lines.iter().map(String::as_str)));
+    }
 
     let mut last_link: Option<(u8, u8)> = None;
     let mut last_link_poll = Instant::now() - Duration::from_secs(2);
@@ -123,10 +124,11 @@ fn run_sampler(
                 if tick - last_link_poll >= Duration::from_secs(2) {
                     last_link_poll = tick;
                     if let Some(b) = &bdf
-                        && let Some(link) = poll_link(&runner, b) {
-                            last_link = Some(link);
-                            let _ = tx.send(SamplerEvent::Link(Some(link)));
-                        }
+                        && let Some(link) = poll_link(&runner, b)
+                    {
+                        last_link = Some(link);
+                        let _ = tx.send(SamplerEvent::Link(Some(link)));
+                    }
                 }
                 sample.pcie_link = last_link;
                 if let Ok(line) = serde_json::to_string(&sample) {
@@ -157,11 +159,12 @@ fn run_sampler(
         if tick - last_xid_scan >= Duration::from_secs(1) {
             last_xid_scan = tick;
             if let Some(source) = &source
-                && let Some(lines) = fetch_kernel_log(&runner, source) {
-                    for sl in scanner.scan(lines.iter().map(String::as_str)) {
-                        emit_scanned(&tx, sl);
-                    }
+                && let Some(lines) = fetch_kernel_log(&runner, source)
+            {
+                for sl in scanner.scan(lines.iter().map(String::as_str)) {
+                    emit_scanned(&tx, sl);
                 }
+            }
         }
 
         let elapsed = tick.elapsed();
@@ -225,7 +228,8 @@ fn fetch_kernel_log(r: &CommandRunner, source: &LogSource) -> Option<Vec<String>
         LogSource::Journal => ("journalctl", &["-k", "--no-pager", "-n", "2000"]),
     };
     let out = r.run(cmd, args);
-    out.ok.then(|| out.stdout.lines().map(String::from).collect())
+    out.ok
+        .then(|| out.stdout.lines().map(String::from).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -237,9 +241,8 @@ fn fetch_kernel_log(r: &CommandRunner, source: &LogSource) -> Option<Vec<String>
 pub fn parse_sample_row(row: &str, ts: DateTime<Utc>) -> TelemetrySample {
     let f: Vec<Option<String>> = csv_fields(row);
     let g = |i: usize| f.get(i).and_then(|v| v.clone());
-    let throttle_raw = g(9).and_then(|v| {
-        u64::from_str_radix(v.trim().trim_start_matches("0x"), 16).ok()
-    });
+    let throttle_raw =
+        g(9).and_then(|v| u64::from_str_radix(v.trim().trim_start_matches("0x"), 16).ok());
     TelemetrySample {
         ts,
         temp_gpu: parse_u32(g(0).as_deref()),
@@ -302,9 +305,9 @@ fn poll_link(r: &CommandRunner, bdf_full: &str) -> Option<(u8, u8)> {
             .lines()
             .find(|l| l.contains("LnkSta:"))
             .and_then(parse_link_line)
-        {
-            return Some(link);
-        }
+    {
+        return Some(link);
+    }
     // sysfs uses a 4-digit PCI domain; nvidia-smi reports 8. Split on the
     // FIRST colon (domain:bus:dev.func has two of them).
     let (domain, rest) = bdf_full.split_once(':').unwrap_or(("", bdf_full));
@@ -334,14 +337,12 @@ fn resolve_bdf(r: &CommandRunner) -> Option<String> {
         "nvidia-smi",
         &["--query-gpu=pci.bus_id", "--format=csv,noheader"],
     );
-    out.stdout_if_ok()
-        .and_then(|s| {
-            s.lines()
-                .find_map(|l| {
-                    let t = l.trim();
-                    (!t.is_empty()).then(|| t.to_string())
-                })
+    out.stdout_if_ok().and_then(|s| {
+        s.lines().find_map(|l| {
+            let t = l.trim();
+            (!t.is_empty()).then(|| t.to_string())
         })
+    })
 }
 
 #[cfg(test)]
@@ -363,7 +364,10 @@ mod tests {
         assert_eq!(s.util_gpu, Some(100));
         assert_eq!(s.util_mem, Some(72));
         assert_eq!(s.throttle_reasons_raw, Some(0x400));
-        assert_eq!(s.throttle_reasons, vec![("Reliability".to_string(), "Active".to_string())]);
+        assert_eq!(
+            s.throttle_reasons,
+            vec![("Reliability".to_string(), "Active".to_string())]
+        );
         assert_eq!(s.pcie_link, None);
     }
 
@@ -387,7 +391,10 @@ mod tests {
             ]
         );
         let unknown = decode_throttle_bits(Some(0x10000));
-        assert_eq!(unknown, vec![("bits 0x10000".to_string(), "Active".to_string())]);
+        assert_eq!(
+            unknown,
+            vec![("bits 0x10000".to_string(), "Active".to_string())]
+        );
     }
 
     #[test]

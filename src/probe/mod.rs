@@ -13,11 +13,10 @@ pub mod system;
 use crate::util::cmd::CommandRunner;
 use serde_json::Value;
 
-/// Context handed to every probe.
+/// Context handed to every probe. Root availability is owned by the runner
+/// (`cmd_baseline` warns on root-only probes); probes only need the runner.
 pub struct BaselineCtx {
     pub runner: CommandRunner,
-    /// True when euid == 0.
-    pub is_root: bool,
 }
 
 /// Outcome of a probe.
@@ -30,7 +29,9 @@ pub enum ProbeResult {
         summary: String,
         data: Value,
     },
-    Degraded { reason: String },
+    Degraded {
+        reason: String,
+    },
 }
 
 impl ProbeResult {

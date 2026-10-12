@@ -14,15 +14,16 @@ mod workload;
 use anyhow::Result;
 use chrono::DateTime;
 use model::{
-    now, Baseline, BiosInfo, DriverInfo, GpuInfo, PcieInfo, SystemInfo, TimelineAnswers,
-    XidEvent,
+    Baseline, BiosInfo, DriverInfo, GpuInfo, PcieInfo, SystemInfo, TimelineAnswers, XidEvent, now,
 };
 use owo_colors::OwoColorize;
-use std::io::IsTerminal;
-use probe::{bios::BiosProbe, gpu::GpuProbe, logs::LogsProbe, pcie::PcieProbe, system::SystemProbe};
 use probe::{BaselineCtx, Probe, ProbeResult};
+use probe::{
+    bios::BiosProbe, gpu::GpuProbe, logs::LogsProbe, pcie::PcieProbe, system::SystemProbe,
+};
 use serde_json::Value;
-use util::cmd::{read_file_lossy, CommandRunner};
+use std::io::IsTerminal;
+use util::cmd::{CommandRunner, read_file_lossy};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -78,7 +79,9 @@ fn interactive_menu() -> Result<()> {
     let choice = inquire::Select::new("What do you want to do?", items.clone()).prompt()?;
     match choice {
         "Full diagnostic battery (recommended)" => {
-            println!("Running the full battery — Stage 0 baseline now (analysis lands in M3; run `monitor` under the workload).\n");
+            println!(
+                "Running the full battery — Stage 0 baseline now (analysis lands in M3; run `monitor` under the workload).\n"
+            );
             cmd_baseline(&[])
         }
         "Monitor only" => cmd_monitor(&[]),
@@ -94,7 +97,10 @@ fn interactive_menu() -> Result<()> {
 
 fn cmd_baseline(args: &[String]) -> Result<()> {
     // `--json [PATH]`
-    let json_path = args.iter().position(|a| a == "--json").map(|i| args.get(i + 1).filter(|a| !a.starts_with('-')).cloned());
+    let json_path = args
+        .iter()
+        .position(|a| a == "--json")
+        .map(|i| args.get(i + 1).filter(|a| !a.starts_with('-')).cloned());
 
     // --- Preflight (PLAN §4.1 step 1) ---
     let is_root = euid_is_zero();
@@ -124,7 +130,6 @@ fn cmd_baseline(args: &[String]) -> Result<()> {
     // --- Stage 0: run all probes (none of them aborts the run) ---
     let ctx = BaselineCtx {
         runner: CommandRunner::new(),
-        is_root,
     };
     let probes: Vec<Box<dyn Probe>> = vec![
         Box::new(SystemProbe),
@@ -133,8 +138,23 @@ fn cmd_baseline(args: &[String]) -> Result<()> {
         Box::new(PcieProbe),
         Box::new(LogsProbe),
     ];
-    let results: Vec<(String, ProbeResult)> =
-        probes.iter().map(|p| (p.name().to_string(), p.run(&ctx))).collect();
+    let results: Vec<(String, ProbeResult)> = probes
+        .iter()
+        .map(|p| (p.name().to_string(), p.run(&ctx)))
+        .collect();
+
+    // Root-only probes (dmidecode, dmesg, lspci AER) degrade without root;
+    // warn once per probe so the gap is visible next to the table.
+    if !is_root {
+        for p in &probes {
+            if p.requires_root() {
+                println!(
+                    "{}",
+                    format!("warning: `{}` needs root; result degraded", p.name()).yellow()
+                );
+            }
+        }
+    }
 
     // --- Timeline interview (interactive only) ---
     let timeline = if std::io::stdin().is_terminal() {
@@ -151,12 +171,8 @@ fn cmd_baseline(args: &[String]) -> Result<()> {
 
     // --- Optional JSON export ---
     if let Some(path) = json_path {
-        let path = path.unwrap_or_else(|| {
-            format!(
-                "baseline-{}.json",
-                baseline.ts.format("%Y%m%dT%H%M%SZ")
-            )
-        });
+        let path = path
+            .unwrap_or_else(|| format!("baseline-{}.json", baseline.ts.format("%Y%m%dT%H%M%SZ")));
         let json = serde_json::to_string_pretty(&baseline)
             .map_err(|e| anyhow::anyhow!("serialize baseline: {e}"))?;
         std::fs::write(&path, json)?;
@@ -213,10 +229,7 @@ fn cmd_monitor(args: &[String]) -> Result<()> {
             }
             "--interval" => {
                 i += 1;
-                opts.interval_ms = args
-                    .get(i)
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(100);
+                opts.interval_ms = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(100);
             }
             // Everything after `--workload` is the workload command.
             "--workload" => {
@@ -255,8 +268,7 @@ fn ask_timeline() -> Result<TimelineAnswers> {
     .prompt()?;
 
     Ok(TimelineAnswers {
-        failure_start: (!failure_start.trim().is_empty())
-            .then(|| failure_start.trim().to_string()),
+        failure_start: (!failure_start.trim().is_empty()).then(|| failure_start.trim().to_string()),
         changes_around,
         notes: None,
     })
@@ -281,10 +293,7 @@ fn from_data<T: serde::de::DeserializeOwned + Default>(
         .unwrap_or_default()
 }
 
-fn assemble_baseline(
-    results: &[(String, ProbeResult)],
-    timeline: TimelineAnswers,
-) -> Baseline {
+fn assemble_baseline(results: &[(String, ProbeResult)], timeline: TimelineAnswers) -> Baseline {
     let system: SystemInfo = from_data(results, "system");
     let bios: BiosInfo = from_data(results, "bios");
     let gpu: GpuInfo = from_data(results, "gpu");
@@ -334,21 +343,27 @@ fn label(s: &str) -> String {
 fn print_baseline_table(b: &Baseline, results: &[(String, ProbeResult)]) {
     let status = |probe: &str| -> String {
         match results.iter().find(|(n, _)| n == probe) {
-            Some((_, ProbeResult::Ok { .. })) => "ok".green().to_string(),
-            Some((_, ProbeResult::Degraded { .. })) => "degraded".yellow().to_string(),
+            Some((_, r)) if r.is_ok() => "ok".green().to_string(),
+            Some((_, _)) => "degraded".yellow().to_string(),
             None => "missing".red().to_string(),
         }
     };
-    // Section header; the status badge is taken from the named probe
-    // (e.g. the "driver" section is sourced by the "gpu" probe).
-    let header = |section: &str, probe: &str| {
-        format!("{} [{}]", section.to_uppercase().bold(), status(probe))
-    };
-    let reason = |probe: &str| -> Option<String> {
-        results.iter().find(|(n, _)| n == probe).and_then(|(_, r)| match r {
-            ProbeResult::Degraded { reason } => Some(reason.clone()),
-            _ => None,
-        })
+    // Section header; the status badge and the one-line detail (the probe
+    // summary on ok, the reason on degraded) come from the named probe
+    // (e.g. the "driver" section is sourced by the "gpu" probe). The
+    // "driver" header skips the detail to avoid duplicating the gpu line.
+    let header = |section: &str, probe: &str, detail: bool| {
+        let base = format!("{} [{}]", section.to_uppercase().bold(), status(probe));
+        if detail && let Some((_, r)) = results.iter().find(|(n, _)| n == probe) {
+            let d = if r.is_ok() {
+                r.summary().dimmed().to_string()
+            } else {
+                r.summary().yellow().to_string()
+            };
+            format!("{base}  {d}")
+        } else {
+            base
+        }
     };
     let opt = |v: Option<&str>| v.map(str::to_owned).unwrap_or_else(|| "—".to_string());
     let opt_color = |v: Option<&str>| match v {
@@ -364,9 +379,17 @@ fn print_baseline_table(b: &Baseline, results: &[(String, ProbeResult)]) {
     );
 
     // SYSTEM
-    println!("\n{}", header("system", "system"));
-    println!("{}{}", label("kernel"), b.system.kernel.as_deref().unwrap_or("—"));
-    println!("{}{}", label("arch"), b.system.arch.as_deref().unwrap_or("—"));
+    println!("\n{}", header("system", "system", true));
+    println!(
+        "{}{}",
+        label("kernel"),
+        b.system.kernel.as_deref().unwrap_or("—")
+    );
+    println!(
+        "{}{}",
+        label("arch"),
+        b.system.arch.as_deref().unwrap_or("—")
+    );
     println!("{}{}", label("os"), b.system.os.as_deref().unwrap_or("—"));
     println!(
         "{}{}",
@@ -382,24 +405,25 @@ fn print_baseline_table(b: &Baseline, results: &[(String, ProbeResult)]) {
     }
 
     // BIOS
-    println!("\n{}", header("bios", "bios"));
+    println!("\n{}", header("bios", "bios", true));
     if b.bios.version.is_some() {
         println!("{}{}", label("version"), opt(b.bios.version.as_deref()));
         println!("{}{}", label("date"), opt(b.bios.date.as_deref()));
         println!("{}{}", label("vendor"), opt(b.bios.vendor.as_deref()));
-    } else {
-        let why = reason("bios").unwrap_or_else(|| "unknown".to_string());
-        println!("{}{}", label("version"), why.yellow());
     }
 
     // DRIVER
-    println!("\n{}", header("driver", "gpu"));
+    println!("\n{}", header("driver", "gpu", false));
     println!(
         "{}{}",
         label("driver version"),
         opt_color(b.driver.driver_version.as_deref())
     );
-    println!("{}{}", label("vbios"), opt(b.driver.vbios_version.as_deref()));
+    println!(
+        "{}{}",
+        label("vbios"),
+        opt(b.driver.vbios_version.as_deref())
+    );
     println!(
         "{}{}",
         label("module version"),
@@ -407,13 +431,17 @@ fn print_baseline_table(b: &Baseline, results: &[(String, ProbeResult)]) {
     );
 
     // GPU
-    println!("\n{}", header("gpu", "gpu"));
+    println!("\n{}", header("gpu", "gpu", true));
     println!("{}{}", label("name"), opt(b.gpu.name.as_deref()).bold());
     println!("{}{}", label("serial"), opt(b.gpu.serial.as_deref()));
     println!("{}{}", label("vbios"), opt(b.gpu.vbios.as_deref()));
     println!("{}{}", label("bdf"), opt(b.gpu.bdf.as_deref()));
     let temp = b.gpu.temp_gpu.map(|t| t.to_string()).unwrap_or_default();
-    let max = b.gpu.max_op_temp_c.map(|t| t.to_string()).unwrap_or_default();
+    let max = b
+        .gpu
+        .max_op_temp_c
+        .map(|t| t.to_string())
+        .unwrap_or_default();
     println!(
         "{}{} °C (max op {} °C)",
         label("temp"),
@@ -422,11 +450,7 @@ fn print_baseline_table(b: &Baseline, results: &[(String, ProbeResult)]) {
         } else {
             temp
         },
-        if max.is_empty() {
-            "?".to_string()
-        } else {
-            max
-        }
+        if max.is_empty() { "?".to_string() } else { max }
     );
     println!(
         "{}{} W (limit {} W)",
@@ -487,24 +511,21 @@ fn print_baseline_table(b: &Baseline, results: &[(String, ProbeResult)]) {
     }
 
     // PCIE
-    println!("\n{}", header("pcie", "pcie"));
+    println!("\n{}", header("pcie", "pcie", true));
     let (cap, sta) = (b.pcie.lnk_cap, b.pcie.lnk_sta);
-    match (cap, sta) {
-        (Some((cg, cw)), Some((sg, sw))) => {
-            let degraded = sg < cg || sw < cw;
-            let link = if degraded {
-                format!("Gen{sg} x{sw} — BELOW capability Gen{cg} x{cw}").red().to_string()
-            } else {
-                format!("Gen{sg} x{sw} (cap Gen{cg} x{cw})").green().to_string()
-            };
-            println!("{}{}", label("link"), link);
-        }
-        _ => {
-            let msg = reason("pcie")
-                .map(|r| format!("unavailable — {r}"))
-                .unwrap_or_else(|| "unavailable".to_string());
-            println!("{}{}", label("link"), msg.yellow());
-        }
+    // Link state unavailable: the header already shows the reason.
+    if let (Some((cg, cw)), Some((sg, sw))) = (cap, sta) {
+        let degraded = sg < cg || sw < cw;
+        let link = if degraded {
+            format!("Gen{sg} x{sw} — BELOW capability Gen{cg} x{cw}")
+                .red()
+                .to_string()
+        } else {
+            format!("Gen{sg} x{sw} (cap Gen{cg} x{cw})")
+                .green()
+                .to_string()
+        };
+        println!("{}{}", label("link"), link);
     }
     let aer = |v: &Option<String>, flag: Option<bool>| -> String {
         match (v, flag) {
@@ -527,16 +548,9 @@ fn print_baseline_table(b: &Baseline, results: &[(String, ProbeResult)]) {
     );
 
     // XID HISTORY
-    println!("\n{}", header("xid history", "logs"));
+    println!("\n{}", header("xid history", "logs", true));
     if b.xid_history.is_empty() {
-        match reason("logs") {
-            Some(r) => println!(
-                "{}{}",
-                label("(none)"),
-                format!("no Xid events readable — {r}").yellow()
-            ),
-            None => println!("{}no Xid events in kernel history", label("(none)")),
-        }
+        println!("{}no Xid events in kernel history", label("(none)"));
     } else {
         for e in &b.xid_history {
             let msg = e

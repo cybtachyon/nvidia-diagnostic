@@ -146,23 +146,20 @@ pub struct FailureMarker {
     pub note: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum MarkerKind {
     #[default]
     UserMark,
     DetectedReset,
 }
 
-
 // ---------------------------------------------------------------------------
 // Stage 3/5 — scoring & verdict
 // ---------------------------------------------------------------------------
 
-#[derive(
-    Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord,
-)]
-#[derive(Default)]
+/// Suspect categories scored in M3 (PLAN §6); consumed by `score.rs`.
+#[allow(dead_code)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Suspect {
     #[default]
     Driver,
@@ -172,7 +169,6 @@ pub enum Suspect {
     CardHardware,
     Cooling,
 }
-
 
 impl std::fmt::Display for Suspect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -189,6 +185,7 @@ impl std::fmt::Display for Suspect {
 }
 
 /// A piece of evidence with signed weights per suspect (PLAN §6).
+#[allow(dead_code)]
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Evidence {
     pub id: String,
@@ -197,6 +194,8 @@ pub struct Evidence {
     pub source: String,
 }
 
+/// A suspect with its M3 score and the evidence ids that contributed.
+#[allow(dead_code)]
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct RankedSuspect {
     pub suspect: Suspect,
@@ -205,6 +204,8 @@ pub struct RankedSuspect {
     pub evidence: Vec<String>,
 }
 
+/// The ranked M3 verdict with the next suggested experiment.
+#[allow(dead_code)]
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Verdict {
     pub ranked: Vec<RankedSuspect>,
