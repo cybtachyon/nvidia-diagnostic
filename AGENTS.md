@@ -32,5 +32,5 @@ This is a monorepo of a Rust CLI for diagnosing issues with Nvidia graphics card
 - [Packager Updater](https://github.com/crabnebula-dev/cargo-packager/tree/main/crates/updater)
 
 ## Testing Instructions
-- Lint with `cargo clippy --fix --allow-dirty`
+- Lint with `cargo fmt` and `cargo clippy --fix --allow-dirty`
 - Test with `cargo test`
