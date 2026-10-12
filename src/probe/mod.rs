@@ -7,6 +7,7 @@
 pub mod bios;
 pub mod gpu;
 pub mod logs;
+pub mod nvapi;
 pub mod pcie;
 pub mod system;
 pub mod target;

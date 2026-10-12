@@ -58,6 +58,9 @@ pub struct GpuInfo {
     pub bdf: Option<String>,
     pub temp_gpu: Option<u32>,
     pub temp_mem: Option<u32>,
+    /// GPU hotspot (junction) temperature (°C) from NvAPI; `None` when the
+    /// NvAPI library is absent or the sensor is unreadable (e.g. not root).
+    pub temp_hotspot: Option<u32>,
     pub power_draw_w: Option<f64>,
     pub power_limit_w: Option<f64>,
     pub clock_graphics_mhz: Option<u32>,
@@ -130,6 +133,9 @@ pub struct TelemetrySample {
     pub ts: DateTime<Utc>,
     pub temp_gpu: Option<u32>,
     pub temp_mem: Option<u32>,
+    /// GPU hotspot (junction) temperature (°C) from NvAPI; `None` when the
+    /// NvAPI library is absent or the sensor is unreadable.
+    pub temp_hotspot: Option<u32>,
     pub power_draw: Option<f64>,
     pub power_limit: Option<f64>,
     pub clock_graphics: Option<u32>,
@@ -227,6 +233,11 @@ pub struct FailureCorrelation {
     pub sample_count: usize,
     pub max_temp_gpu: Option<u32>,
     pub max_temp_mem: Option<u32>,
+    /// Pre-window peak GPU hotspot (junction) temperature (°C).
+    pub max_hotspot: Option<u32>,
+    /// Pre-window peak of (hotspot − core) in °C; the LACT-style junction
+    /// delta that drives the extra cooling weight.
+    pub max_hotspot_delta: Option<u32>,
     pub max_power_draw: Option<f64>,
     pub power_limit: Option<f64>,
     /// Pre-window peak draw at/over 99% of the limit (PLAN §6 "at/over limit").
@@ -280,6 +291,9 @@ pub struct TelemetrySummary {
     pub sample_count: u64,
     pub duration_secs: f64,
     pub temp_gpu_c: Stats,
+    /// Session-wide GPU hotspot (junction) temperature stats (°C).
+    #[serde(default)]
+    pub temp_hotspot_c: Stats,
     pub power_draw_w: Stats,
     pub clock_graphics_mhz: Stats,
     pub fan_pct: Stats,

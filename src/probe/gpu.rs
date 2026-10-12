@@ -3,6 +3,7 @@
 //! Targets the single RTX 5090. On a multi-GPU box the probe selects the card
 //! by name (`probe::target`) and records a guardrail note in the summary.
 
+use crate::probe::nvapi::NvApi;
 use crate::probe::target::{guardrail_note, select_target_index};
 use crate::probe::{BaselineCtx, Probe, ProbeResult};
 use crate::util::cmd::{csv_fields, parse_f64, parse_u32};
@@ -85,6 +86,13 @@ impl Probe for GpuProbe {
         // Deeper state: max operating temp, throttle reasons, ECC support.
         let (max_op_temp_c, throttle_reasons, ecc) = deep_state(r);
 
+        // Hotspot (junction) temperature via NvAPI; nvidia-smi only exposes
+        // the core temperature. Degrades to None without the NvAPI library.
+        let temp_hotspot = NvApi::new().and_then(|api| {
+            bdf.as_deref()
+                .and_then(|bdf| api.read_hotspot(bdf, &target_name))
+        });
+
         let summary = format!(
             "{} @ {}°C, {}W (limit {}W){}",
             name.as_deref().unwrap_or("GPU"),
@@ -107,6 +115,7 @@ impl Probe for GpuProbe {
                 "bdf": bdf,
                 "temp_gpu": temp_gpu,
                 "temp_mem": temp_mem,
+                "temp_hotspot": temp_hotspot,
                 "power_draw_w": power_draw_w,
                 "power_limit_w": power_limit_w,
                 "clock_graphics_mhz": clock_graphics_mhz,

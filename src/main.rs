@@ -105,7 +105,7 @@ fn interactive_menu() -> Result<()> {
         "Rerun an isolation experiment",
         "View / export previous report",
     ];
-    let choice = inquire::Select::new("What do you want to do?", items.clone()).prompt()?;
+    let choice = inquire::Select::new("What do you want to do? (Ctrl+C to quit)", items.clone()).prompt()?;
     match choice {
         "Full diagnostic battery (recommended)" => cmd_battery(),
         "Monitor only" => cmd_monitor(&[]),
@@ -867,6 +867,17 @@ fn print_baseline_table(b: &Baseline, results: &[(String, ProbeResult)]) {
         },
         if max.is_empty() { "?".to_string() } else { max }
     );
+    if let Some(hotspot) = b.gpu.temp_hotspot {
+        let delta = b.gpu.temp_gpu.map(|core| hotspot.saturating_sub(core));
+        println!(
+            "{}{} °C{}",
+            label("temp (hotspot)"),
+            hotspot,
+            delta
+                .map(|d| format!(" (Δ{d} °C vs core)"))
+                .unwrap_or_default()
+        );
+    }
     println!(
         "{}{} W (limit {} W)",
         label("power"),

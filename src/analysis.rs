@@ -5,14 +5,15 @@
 
 use crate::events::xid::{is_reset_line, parse_nvrm_lines};
 use crate::model::{
-    Analysis, Baseline, Evidence, FailureCorrelation, FailureMarker, MarkerKind, TelemetrySample,
-    XidEvent, stamp,
+    Analysis, Baseline, Evidence, FailureCorrelation, FailureMarker, MarkerKind, Suspect,
+    TelemetrySample, XidEvent, stamp,
 };
 use crate::score::{print_verdict, weights_for};
 use crate::telemetry::sampler::{detect_log_source, fetch_kernel_log, fetch_kernel_log_boot};
 use crate::util::cmd::CommandRunner;
 use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Utc};
 use owo_colors::OwoColorize;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// 10 s pre-window before each failure marker (PLAN §5 Stage 1).
@@ -34,6 +35,15 @@ const STANDING_THROTTLE_BITS: u64 = 0x400;
 /// (the crashed boot's index shifts as the system reboots; the journal may
 /// also rotate, so scan deep and stop at the first missing boot).
 const RECONSTRUCT_BOOT_SCAN: u32 = 15;
+/// Baseline hotspot−core delta (°C) below which no extra cooling weight is
+/// added. A healthy card runs the junction only a few degrees above the
+/// core; a large delta points at a thermal-interface / cooling fault.
+const HOTSPOT_DELTA_BASE_C: u32 = 25;
+/// Each full step of this size (°C) above the base delta adds one unit of
+/// cooling weight (the "every 5 degrees over 25" rule).
+const HOTSPOT_DELTA_STEP_C: u32 = 5;
+/// Cooling weight added per step above the base hotspot delta.
+const HOTSPOT_DELTA_WEIGHT_PER_STEP: i8 = 1;
 
 /// A loaded monitor session (the `monitor-*.json` sidecar).
 #[derive(serde::Deserialize)]
@@ -226,6 +236,17 @@ pub fn correlate(session: &Session, samples: &[TelemetrySample]) -> Correlated {
 
         let max_temp_gpu = window.iter().filter_map(|s| s.temp_gpu).max();
         let max_temp_mem = window.iter().filter_map(|s| s.temp_mem).max();
+        // Hotspot (junction) peak and the peak (hotspot − core) delta. The
+        // delta is computed per sample so a single hot junction reading is
+        // not masked by an unrelated core-temperature peak.
+        let max_hotspot = window.iter().filter_map(|s| s.temp_hotspot).max();
+        let max_hotspot_delta = window
+            .iter()
+            .filter_map(|s| match (s.temp_hotspot, s.temp_gpu) {
+                (Some(hotspot), Some(core)) => Some(hotspot.saturating_sub(core)),
+                _ => None,
+            })
+            .max();
         // f64 is not `Ord`; total_cmp keeps the comparison total.
         let max_power_draw = window
             .iter()
@@ -286,6 +307,8 @@ pub fn correlate(session: &Session, samples: &[TelemetrySample]) -> Correlated {
             sample_count: window.len(),
             max_temp_gpu,
             max_temp_mem,
+            max_hotspot,
+            max_hotspot_delta,
             max_power_draw,
             power_limit,
             power_at_limit,
@@ -403,6 +426,31 @@ pub fn build_evidence(
                 "monitor session",
             ));
         }
+        // Hotspot (junction) delta → extra cooling weight (LACT-style): each
+        // 5 °C the (hotspot − core) delta exceeds 25 °C adds one unit of
+        // cooling weight. A large delta means the junction is running far
+        // hotter than the core, i.e. a thermal-interface / cooling fault.
+        if let Some(delta) = c.max_hotspot_delta
+            && delta > HOTSPOT_DELTA_BASE_C
+        {
+            let steps = (delta - HOTSPOT_DELTA_BASE_C) / HOTSPOT_DELTA_STEP_C;
+            let weight =
+                i8::try_from(steps.min(127)).unwrap_or(i8::MAX) * HOTSPOT_DELTA_WEIGHT_PER_STEP;
+            let mut w = BTreeMap::new();
+            w.insert(Suspect::Cooling, weight);
+            out.push(Evidence {
+                id: "hotspot_delta_in_prewindow".to_string(),
+                description: format!(
+                    "GPU hotspot {} °C is {} °C above core {} °C in pre-window at {at} (delta > {} °C → +{weight} cooling)",
+                    c.max_hotspot.unwrap_or(0),
+                    delta,
+                    c.max_temp_gpu.unwrap_or(0),
+                    HOTSPOT_DELTA_BASE_C,
+                ),
+                weight_per_suspect: w,
+                source: "monitor session".to_string(),
+            });
+        }
     }
 
     // --- Static baseline evidence (PLAN §6 rows 7–10) ---
@@ -492,6 +540,9 @@ pub fn print_correlations(correlations: &[FailureCorrelation]) {
         let mut line = String::new();
         if let Some(t) = c.max_temp_gpu {
             line.push_str(&format!("temp {t}°C peak · "));
+        }
+        if let Some(d) = c.max_hotspot_delta {
+            line.push_str(&format!("hotspot Δ{d}°C · "));
         }
         if let Some(p) = c.max_power_draw {
             line.push_str(&format!("power {p:.1} W peak · "));
@@ -841,6 +892,71 @@ mod tests {
             assert!(ids.contains(&expected), "missing {expected}: {ids:?}");
         }
         assert!(!ids.contains(&"temp_below_trip_fans_not_pinned")); // 70 °C is not well below 90
+    }
+
+    /// A pre-window correlation with a given (hotspot − core) delta.
+    fn corr_with_delta(t: DateTime<Utc>, delta: Option<u32>) -> FailureCorrelation {
+        FailureCorrelation {
+            marker: FailureMarker {
+                ts: t,
+                kind: MarkerKind::UserMark,
+                note: None,
+            },
+            window_start: t,
+            window_end: t,
+            sample_count: 1,
+            max_temp_gpu: Some(70),
+            max_temp_mem: None,
+            max_hotspot: delta.map(|d| 70 + d),
+            max_hotspot_delta: delta,
+            max_power_draw: None,
+            power_limit: None,
+            power_at_limit: false,
+            min_clock_graphics: None,
+            max_fan_pct: None,
+            throttle_active: false,
+            throttle_reasons_raw: None,
+            link: None,
+            xids_nearby: vec![],
+            note: None,
+        }
+    }
+
+    /// The hotspot delta adds one unit of cooling weight per 5 °C the
+    /// (hotspot − core) delta exceeds 25 °C (the "every 5 degrees over 25"
+    /// rule). Below the base, or with no delta, no evidence is emitted.
+    #[test]
+    fn hotspot_delta_adds_dynamic_cooling_weight() {
+        let t = Utc::now();
+        let session = Session {
+            started: t,
+            ended: t,
+            jsonl: String::new(),
+            xid_events: vec![],
+            markers: vec![],
+        };
+        let cooling = |ev: &[Evidence]| {
+            ev.iter()
+                .find(|e| e.id == "hotspot_delta_in_prewindow")
+                .and_then(|e| {
+                    e.weight_per_suspect
+                        .get(&crate::model::Suspect::Cooling)
+                        .copied()
+                })
+        };
+
+        // 30 °C delta → 1 step over 25 → +1 cooling.
+        let ev = build_evidence(&session, &[corr_with_delta(t, Some(30))], None);
+        assert_eq!(cooling(&ev), Some(1));
+        // 40 °C delta → 3 steps → +3 cooling.
+        let ev = build_evidence(&session, &[corr_with_delta(t, Some(40))], None);
+        assert_eq!(cooling(&ev), Some(3));
+        // 25 °C delta → 0 steps (not over the base) → no evidence.
+        let ev = build_evidence(&session, &[corr_with_delta(t, Some(25))], None);
+        assert!(cooling(&ev).is_none());
+        // No delta (hotspot unreadable) → no evidence.
+        let ev = build_evidence(&session, &[corr_with_delta(t, None)], None);
+        assert!(cooling(&ev).is_none());
     }
 
     #[test]

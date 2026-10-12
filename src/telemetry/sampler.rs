@@ -93,7 +93,15 @@ fn run_sampler(
     let mut writer = BufWriter::new(file);
     let mut scanner = XidScanner::new();
     let source = detect_log_source(&runner);
-    let bdf = cfg.bdf.clone().or_else(|| resolve_bdf(&runner));
+    // Target card (name + BDF) for the PCIe poll and the NvAPI hotspot read.
+    let target = resolve_target(&runner);
+    let bdf = cfg
+        .bdf
+        .clone()
+        .or_else(|| target.as_ref().map(|t| t.bdf_full.clone()));
+    // NvAPI client for the hotspot (junction) temperature; `None` when the
+    // NvAPI library is absent (the sample then carries no hotspot).
+    let nvapi = crate::probe::nvapi::NvApi::new();
 
     // Seed the Xid scanner with the current kernel-log tail so the 1 s
     // scans only report lines that appear *during* the monitor run.
@@ -131,6 +139,11 @@ fn run_sampler(
                     }
                 }
                 sample.pcie_link = last_link;
+                // Hotspot (junction) temperature via NvAPI, alongside the
+                // core temperature from nvidia-smi.
+                if let (Some(api), Some(t)) = (&nvapi, &target) {
+                    sample.temp_hotspot = api.read_hotspot(&t.bdf_full, &t.name);
+                }
                 if let Ok(line) = serde_json::to_string(&sample) {
                     let _ = writeln!(writer, "{line}");
                     let _ = writer.flush();
@@ -261,6 +274,8 @@ pub fn parse_sample_row(row: &str, ts: DateTime<Utc>) -> TelemetrySample {
         ts,
         temp_gpu: parse_u32(g(0).as_deref()),
         temp_mem: parse_u32(g(1).as_deref()),
+        // The hotspot comes from NvAPI (set by the sampler), not the CSV.
+        temp_hotspot: None,
         power_draw: parse_f64(g(2).as_deref()),
         power_limit: parse_f64(g(3).as_deref()),
         clock_graphics: parse_u32(g(4).as_deref()),
@@ -345,10 +360,10 @@ pub fn shorten_bdf(full: &str) -> String {
     }
 }
 
-/// Full-form BDF (`00000000:01:00.0`) of the target card, selected by name
-/// (PLAN §7 M5 multi-GPU guardrail) so a multi-GPU box watches the 5090.
-fn resolve_bdf(r: &CommandRunner) -> Option<String> {
-    crate::probe::target::resolve_gpu_target(r).map(|t| t.bdf_full)
+/// The target card (name + full-form BDF `00000000:01:00.0`), selected by
+/// name (PLAN §7 M5 multi-GPU guardrail) so a multi-GPU box watches the 5090.
+fn resolve_target(r: &CommandRunner) -> Option<crate::probe::target::GpuTarget> {
+    crate::probe::target::resolve_gpu_target(r)
 }
 
 #[cfg(test)]

@@ -80,6 +80,7 @@ fn summarize(session: &Session, samples: &[TelemetrySample]) -> TelemetrySummary
         sample_count: samples.len() as u64,
         duration_secs,
         temp_gpu_c: stats(|s| s.temp_gpu.map(f64::from)),
+        temp_hotspot_c: stats(|s| s.temp_hotspot.map(f64::from)),
         power_draw_w: stats(|s| s.power_draw),
         clock_graphics_mhz: stats(|s| s.clock_graphics.map(f64::from)),
         fan_pct: stats(|s| s.fan_pct.map(f64::from)),
@@ -175,6 +176,7 @@ pub fn print_report(r: &Report) {
         );
     };
     stats_row("temp_gpu", &t.temp_gpu_c, "°C");
+    stats_row("temp_hotspot", &t.temp_hotspot_c, "°C");
     stats_row("power_draw", &t.power_draw_w, "W");
     stats_row("clock_graphics", &t.clock_graphics_mhz, "MHz");
     stats_row("fan", &t.fan_pct, "%");
