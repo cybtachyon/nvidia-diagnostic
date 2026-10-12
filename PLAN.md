@@ -1,4 +1,4 @@
-# PLAN — `nvidia-debug`: Reproducible Root-Cause Diagnosis for RTX 5090 Context Loss
+# PLAN — `nvidia-diagnostic`: Reproducible Root-Cause Diagnosis for RTX 5090 Context Loss
 
 Status: **planning only** (code lands in a later turn)
 Repo state: fresh skeleton — `Cargo.toml` (deps: `inquire`, `indicatif`, `owo-colors`), `src/main.rs` stub.
@@ -7,7 +7,7 @@ Repo state: fresh skeleton — `Cargo.toml` (deps: `inquire`, `indicatif`, `owo-
 
 ## 1. Objective
 
-Build a repeatable Rust CLI diagnostic tool (`nvidia-debug`) that:
+Build a repeatable Rust CLI diagnostic tool (`nvidia-diagnostic`) that:
 
 1. Collects a structured baseline of the system (BIOS, driver, kernel, PCIe, GPU).
 2. Captures live GPU telemetry (temp, power, clocks, throttle reasons, Xid events) **while the user's real CUDA workload runs** — the condition under which the failure reproduces.
@@ -60,7 +60,7 @@ The tool's job is to accumulate evidence for/against each and emit a ranked verd
 
 ### 4.1 CLI UX (`inquire`-driven)
 
-Entry: `nvidia-debug` (no args → interactive menu) plus subcommands for scripted use.
+Entry: `nvidia-diagnostic` (no args → interactive menu) plus subcommands for scripted use.
 
 ```
 ? What do you want to do?
@@ -79,7 +79,7 @@ Entry: `nvidia-debug` (no args → interactive menu) plus subcommands for script
 5. **Analysis** — parse Xid stream, correlate each failure marker/reset with the last ~10 s of telemetry (power, temp, clocks, throttle, PCIe link state).
 6. **Scoring & verdict** — score each hypothesis (§6), print ranked result with `owo-colors`, suggest the next isolation experiment.
 7. **Guided experiments** — see §5 Stage 5; after each, user re-runs monitor + stress and the tool folds the result into the scores.
-8. **Report** — write `report-<timestamp>.json` + human summary; `nvidia-debug report` re-opens it.
+8. **Report** — write `report-<timestamp>.json` + human summary; `nvidia-diagnostic report` re-opens it.
 
 `monitor` subcommand = step 3 only (for use under an already-running session). `experiment <name>` re-runs baseline + monitor + scoring after the user performed the change.
 
@@ -250,7 +250,7 @@ Error-handling policy: probes never abort the run — a failed/missing command r
 ## 10. Deliverables
 
 1. This `PLAN.md`.
-2. The `nvidia-debug` Rust CLI implementing §4–§6 (next turn).
+2. The `nvidia-diagnostic` Rust CLI implementing §4–§6 (next turn).
 3. `README.md` with the replication procedure for others.
 4. Sample `report-*.json` from a run on this machine.
 

@@ -7,7 +7,7 @@ target/
 # Comment this to vendor dependencies
 .cargo/
 
-# nvidia-debug output artifacts
+# nvidia-diagnostic output artifacts
 baseline-*.json
 monitor-*.json
 report-*.json

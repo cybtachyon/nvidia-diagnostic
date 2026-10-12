@@ -29,7 +29,7 @@ pub const EXPERIMENTS: &[Experiment] = &[
         steps: &[
             "Install the known-good driver (apt/dkms), removing the current one.",
             "Reboot.",
-            "Retest: nvidia-debug monitor under the failing workload.",
+            "Retest: nvidia-diagnostic monitor under the failing workload.",
         ],
         targets: &[Suspect::Driver],
     },
@@ -41,7 +41,7 @@ pub const EXPERIMENTS: &[Experiment] = &[
         steps: &[
             "Flash the previous BIOS version (record both versions).",
             "Reboot.",
-            "Retest: nvidia-debug monitor under the failing workload.",
+            "Retest: nvidia-diagnostic monitor under the failing workload.",
         ],
         targets: &[Suspect::Bios],
     },
@@ -53,7 +53,7 @@ pub const EXPERIMENTS: &[Experiment] = &[
         steps: &[
             "Power off, unplug the 3× 12VHPWR connectors, reseat each one.",
             "Reseat the PCIe card in its slot.",
-            "Retest: nvidia-debug monitor under the failing workload.",
+            "Retest: nvidia-diagnostic monitor under the failing workload.",
         ],
         targets: &[Suspect::PcieConnector],
     },
@@ -64,7 +64,7 @@ pub const EXPERIMENTS: &[Experiment] = &[
         preconditions: "A known-good PSU of adequate rating is available.",
         steps: &[
             "Power off, swap the PSU.",
-            "Retest: nvidia-debug monitor under the failing workload.",
+            "Retest: nvidia-diagnostic monitor under the failing workload.",
         ],
         targets: &[Suspect::Psu],
     },
@@ -76,7 +76,7 @@ pub const EXPERIMENTS: &[Experiment] = &[
         steps: &[
             "Move the card to the other slot, or set the link speed clamp in BIOS.",
             "Reboot where needed.",
-            "Retest: nvidia-debug monitor under the failing workload.",
+            "Retest: nvidia-diagnostic monitor under the failing workload.",
         ],
         targets: &[Suspect::Bios, Suspect::PcieConnector],
     },
@@ -88,7 +88,7 @@ pub const EXPERIMENTS: &[Experiment] = &[
         steps: &[
             "Toggle Resizable BAR and Above-4G Decoding (one at a time is better).",
             "Reboot.",
-            "Retest: nvidia-debug monitor under the failing workload.",
+            "Retest: nvidia-diagnostic monitor under the failing workload.",
         ],
         targets: &[Suspect::Bios],
     },
@@ -99,7 +99,7 @@ pub const EXPERIMENTS: &[Experiment] = &[
         preconditions: "A known-good second system with a free PCIe slot and adequate PSU.",
         steps: &[
             "Move the card to the second system.",
-            "Run a stress workload (e.g. CUDA burn) under nvidia-debug monitor.",
+            "Run a stress workload (e.g. CUDA burn) under nvidia-diagnostic monitor.",
             "Record whether the failure reproduces.",
         ],
         targets: &[Suspect::CardHardware],
@@ -112,7 +112,7 @@ pub const EXPERIMENTS: &[Experiment] = &[
         steps: &[
             "Check case airflow and dust on the card heatsink.",
             "Try nvidia-smi --fan-control (best-effort on the 5090).",
-            "Retest: nvidia-debug monitor under the failing workload.",
+            "Retest: nvidia-diagnostic monitor under the failing workload.",
         ],
         targets: &[Suspect::Cooling],
     },

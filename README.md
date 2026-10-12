@@ -1,6 +1,6 @@
-# nvidia-debug
+# nvidia-diagnostic
 
-`nvidia-debug` is a Rust CLI for reproducible root-cause diagnosis of GPU
+`nvidia-diagnostic` is a Rust CLI for reproducible root-cause diagnosis of GPU
 context loss (black screen + fan-to-max) on an NVIDIA card under a real CUDA
 workload. It was built around an RTX 5090 (Blackwell, GB202) that started
 dropping off the bus after a BIOS update and a driver update.
@@ -39,33 +39,33 @@ card matches the name it falls back to the first GPU and says so.
 
 ```sh
 CARGO_HOME=.cargo cargo build
-# binary: target/debug/nvidia-debug
+# binary: target/debug/nvidia-diagnostic
 ```
 
 ## Subcommands
 
 ```
-nvidia-debug                  interactive menu
-nvidia-debug baseline         preflight + Stage-0 baseline snapshot + colored table
+nvidia-diagnostic                  interactive menu
+nvidia-diagnostic baseline         preflight + Stage-0 baseline snapshot + colored table
                               (--json [PATH] also writes the baseline as JSON)
-nvidia-debug monitor          live telemetry monitor: 10 Hz JSONL, 1 s Xid scan,
+nvidia-diagnostic monitor          live telemetry monitor: 10 Hz JSONL, 1 s Xid scan,
                               `m` marks black screens, auto reset detect
                               [--duration N] [--jsonl PATH] [--interval MS]
                               [--workload CMD [ARGS...]]
-nvidia-debug stress <SECS>    fixed-duration stress window under the monitor with
+nvidia-diagnostic stress <SECS>    fixed-duration stress window under the monitor with
                               an `indicatif` progress bar; typically a
                               `--workload` stress command
-nvidia-debug analyze [SESSION]  pre-window correlation + scoring + verdict for a
+nvidia-diagnostic analyze [SESSION]  pre-window correlation + scoring + verdict for a
                               monitor session (defaults to the newest
                               monitor-*.json); [--baseline PATH] adds the static
                               evidence. Writes a report-<ts>.json
-nvidia-debug experiment <X1..X8>
+nvidia-diagnostic experiment <X1..X8>
                               guided isolation experiment: show the steps, retest
                               under the monitor, ask the outcome, fold it into the
                               scores and write a report
-nvidia-debug report [PATH]    view / export a previous report (defaults to the
+nvidia-diagnostic report [PATH]    view / export a previous report (defaults to the
                               newest report-*.json)
-nvidia-debug reconstruct <JSONL>
+nvidia-diagnostic reconstruct <JSONL>
                               rebuild a monitor-*.json sidecar from a raw telemetry
                               JSONL (after a force shutdown skipped the sidecar)
 ```
@@ -74,33 +74,33 @@ nvidia-debug reconstruct <JSONL>
 
 The canonical, replicable procedure. Run it *while the failure reproduces*.
 
-1. **Baseline.** `nvidia-debug baseline` (add `--json baseline.json` to keep
+1. **Baseline.** `nvidia-diagnostic baseline` (add `--json baseline.json` to keep
    the static evidence for the analysis). This runs the preflight tool check,
    the Stage-0 probes (system, BIOS, driver, GPU, PCIe, Xid history) and the
    timeline interview (when did it start, what changed).
 
-2. **Monitor under the workload.** `nvidia-debug monitor` and launch your real
+2. **Monitor under the workload.** `nvidia-diagnostic monitor` and launch your real
    CUDA workload in the same terminal (or pass it with `--workload`). Press
    `m` on each black screen; the tool also auto-detects driver resets and Xid
    79/154. Stop with `q` or Ctrl-C. It writes `telemetry-<ts>.jsonl` plus a
    `monitor-<ts>.json` sidecar.
 
    For an on-demand reproduction, run a bounded stress window instead:
-   `nvidia-debug stress 60 --workload <your-burn-command>`.
+   `nvidia-diagnostic stress 60 --workload <your-burn-command>`.
 
-3. **Analyze.** `nvidia-debug analyze --baseline baseline.json` correlates each
+3. **Analyze.** `nvidia-diagnostic analyze --baseline baseline.json` correlates each
    failure marker with the 10 s pre-window (power, temp, clocks, throttle,
    PCIe link) and the Xids within ±2 s, builds the §6 evidence set, and prints
    the ranked verdict plus the suggested next experiment. It writes
    `report-<ts>.json`.
 
 4. **Isolation experiments.** Run the top suggested experiment
-   (`nvidia-debug experiment X3`, for example), perform the physical change,
+   (`nvidia-diagnostic experiment X3`, for example), perform the physical change,
    retest under the monitor, and record the outcome. The tool folds the
    outcome into the scores (a "fixed after X3 reseat" is the strongest
    connector evidence) and writes an updated report.
 
-5. **Verdict + report.** `nvidia-debug report` re-opens the newest report.
+5. **Verdict + report.** `nvidia-diagnostic report` re-opens the newest report.
    The JSON is what you share: it carries the baseline, timeline, telemetry
    summary, per-failure windows, Xids, markers, experiment runs, the evidence
    set, and the final ranked verdict.
@@ -124,7 +124,7 @@ signals are a Xid 79 at the failure (bus fall-off → chase the PCIe path) and a
 - **Multi-GPU.** The target card is selected by name; a guardrail note is
   recorded when more than one GPU is visible.
 - **Force shutdown mid-monitor.** If the monitor is killed before it writes
-  the sidecar, `nvidia-debug reconstruct telemetry-<ts>.jsonl` rebuilds it
+  the sidecar, `nvidia-diagnostic reconstruct telemetry-<ts>.jsonl` rebuilds it
   from the raw JSONL and re-scans the kernel log (current boot plus the last
   15 previous boots) for Xids in the session window.
 

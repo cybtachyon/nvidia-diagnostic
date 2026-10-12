@@ -885,7 +885,7 @@ mod tests {
 
     #[test]
     fn reconstruct_session_empty_file_errors() {
-        let dir = std::env::temp_dir().join("nvidia-debug-reconstruct-test");
+        let dir = std::env::temp_dir().join("nvidia-diagnostic-reconstruct-test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("empty.jsonl");
         std::fs::write(&path, "").unwrap();

@@ -1,4 +1,4 @@
-//! `nvidia-debug` — reproducible root-cause diagnosis for RTX 5090 context
+//! `nvidia-diagnostic` — reproducible root-cause diagnosis for RTX 5090 context
 //! loss (PLAN §4.1). M1: subcommand dispatch, interactive menu, Stage-0
 //! baseline snapshot and the colored baseline table. M2: live telemetry
 //! monitor (`monitor` subcommand). M3: session analysis, pre-window
@@ -59,41 +59,41 @@ fn main() -> Result<()> {
 fn print_usage() {
     println!(
         "\
-nvidia-debug — reproducible root-cause diagnosis for RTX 5090 context loss
+nvidia-diagnostic — reproducible root-cause diagnosis for RTX 5090 context loss
 
 Usage:
-  nvidia-debug                  interactive menu
-  nvidia-debug baseline         preflight + Stage-0 baseline snapshot + colored table
+  nvidia-diagnostic                  interactive menu
+  nvidia-diagnostic baseline         preflight + Stage-0 baseline snapshot + colored table
                                 (--json [PATH] also writes the baseline as JSON)
-  nvidia-debug monitor          live telemetry monitor: 10 Hz JSONL, 1 s Xid
+  nvidia-diagnostic monitor          live telemetry monitor: 10 Hz JSONL, 1 s Xid
                                 scan, `m` marks black screens, auto reset detect
                                 [--duration N] [--jsonl PATH] [--interval MS]
                                 [--workload CMD [ARGS...]]
-  nvidia-debug stress <SECS>    fixed-duration stress window under the monitor
+  nvidia-diagnostic stress <SECS>    fixed-duration stress window under the monitor
                                 (PLAN §5 Stage 2) with an `indicatif` progress
                                 bar; typically a `--workload` stress command
                                 [--workload CMD [ARGS...]] [--jsonl PATH]
                                 [--interval MS]
-  nvidia-debug analyze [SESSION]
+  nvidia-diagnostic analyze [SESSION]
                                  M3: pre-window correlation + §6 scoring + verdict
                                  for a monitor session (defaults to the newest
                                  monitor-*.json); [--baseline PATH] adds the
                                  static evidence (link, AER, user timeline).
                                  Writes a report-<ts>.json
-  nvidia-debug experiment <X1..X8>
+  nvidia-diagnostic experiment <X1..X8>
                                  M4: guided isolation experiment. Shows the
                                  steps, retests under the monitor, asks the
                                  outcome, folds it into the scores and writes
                                  a report. [--session PATH] [--baseline PATH]
                                  [--outcome fixed|still|reproduced|not-reproduced]
-  nvidia-debug report [PATH]      M4: view / export a previous report (defaults
+  nvidia-diagnostic report [PATH]      M4: view / export a previous report (defaults
                                  to the newest report-*.json)
-  nvidia-debug reconstruct <JSONL>
+  nvidia-diagnostic reconstruct <JSONL>
                                  Rebuild a monitor-*.json session sidecar from a
                                  raw telemetry JSONL (after a force shutdown
                                  skipped the sidecar write). Scans the kernel
                                  log for Xids in the session window.
-  nvidia-debug --help           this help"
+  nvidia-diagnostic --help           this help"
     );
 }
 
@@ -276,7 +276,7 @@ fn cmd_battery() -> Result<()> {
         println!(
             "{}",
             format!(
-                "run the monitor under the workload, then: nvidia-debug analyze --baseline {}",
+                "run the monitor under the workload, then: nvidia-diagnostic analyze --baseline {}",
                 baseline_path.display()
             )
             .dimmed()
@@ -385,7 +385,7 @@ fn cmd_experiment(args: &[String]) -> Result<()> {
         }
         None => {
             anyhow::bail!(
-                "usage: nvidia-debug experiment <X1..X8> [--session PATH] [--baseline PATH] \
+                "usage: nvidia-diagnostic experiment <X1..X8> [--session PATH] [--baseline PATH] \
                  [--outcome fixed|still|reproduced|not-reproduced]"
             )
         }
@@ -551,7 +551,7 @@ fn cmd_report(args: &[String]) -> Result<()> {
 fn cmd_reconstruct(args: &[String]) -> Result<()> {
     let jsonl = match args.first() {
         Some(p) => PathBuf::from(p),
-        None => anyhow::bail!("usage: nvidia-debug reconstruct <TELEMETRY-JSONL>"),
+        None => anyhow::bail!("usage: nvidia-diagnostic reconstruct <TELEMETRY-JSONL>"),
     };
     let sidecar = analysis::reconstruct_session(&jsonl)?;
     let session = analysis::load_session(&sidecar)?;
@@ -565,7 +565,7 @@ fn cmd_reconstruct(args: &[String]) -> Result<()> {
     println!(
         "{} {}",
         "next:".dimmed(),
-        format!("nvidia-debug analyze {}", sidecar.display()).dimmed()
+        format!("nvidia-diagnostic analyze {}", sidecar.display()).dimmed()
     );
     Ok(())
 }
@@ -650,7 +650,7 @@ fn cmd_stress(args: &[String]) -> Result<()> {
     }
     let Some(duration) = duration else {
         anyhow::bail!(
-            "usage: nvidia-debug stress <DURATION-SECS> [--workload CMD [ARGS...]] \
+            "usage: nvidia-diagnostic stress <DURATION-SECS> [--workload CMD [ARGS...]] \
              [--jsonl PATH] [--interval MS]"
         );
     };
@@ -789,7 +789,7 @@ fn print_baseline_table(b: &Baseline, results: &[(String, ProbeResult)]) {
     println!();
     println!(
         "{} {}",
-        "nvidia-debug — baseline snapshot".bold(),
+        "nvidia-diagnostic — baseline snapshot".bold(),
         format_timestamp(&b.ts).dimmed()
     );
 
@@ -1006,7 +1006,7 @@ fn print_baseline_table(b: &Baseline, results: &[(String, ProbeResult)]) {
     println!();
     println!(
         "{}",
-        "next: run `nvidia-debug monitor` under the real workload, then `nvidia-debug analyze` (PLAN §11)".dimmed()
+        "next: run `nvidia-diagnostic monitor` under the real workload, then `nvidia-diagnostic analyze` (PLAN §11)".dimmed()
     );
 }
 
