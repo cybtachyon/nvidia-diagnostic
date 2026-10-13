@@ -12,6 +12,10 @@ pub struct CmdOutput {
     /// True when the binary could not be found at all (as opposed to a
     /// non-zero exit of a present tool).
     pub missing: bool,
+    /// True when the process was terminated by SIGINT (Ctrl+C). That kill is
+    /// user-initiated, not a real tool failure, so callers must not treat it
+    /// as one (e.g. nvidia-smi "stopped responding").
+    pub killed_by_sigint: bool,
     pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
@@ -58,6 +62,7 @@ impl CommandRunner {
             Ok(out) => CmdOutput {
                 ok: out.status.success(),
                 missing: false,
+                killed_by_sigint: killed_by_sigint(&out.status),
                 exit_code: out.status.code(),
                 stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
                 stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -65,6 +70,7 @@ impl CommandRunner {
             Err(e) => CmdOutput {
                 ok: false,
                 missing: e.kind() == std::io::ErrorKind::NotFound,
+                killed_by_sigint: false,
                 exit_code: None,
                 stdout: String::new(),
                 stderr: e.to_string(),
@@ -76,6 +82,19 @@ impl CommandRunner {
     pub fn stdout(&self, cmd: &str, args: &[&str]) -> Option<String> {
         self.run(cmd, args).stdout_if_ok()
     }
+}
+
+/// True when the process was terminated by SIGINT (Ctrl+C). A normal exit
+/// (even a non-zero one) returns false; only a signal kill sets it.
+#[cfg(unix)]
+fn killed_by_sigint(status: &std::process::ExitStatus) -> bool {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal() == Some(libc::SIGINT)
+}
+
+#[cfg(not(unix))]
+fn killed_by_sigint(_status: &std::process::ExitStatus) -> bool {
+    false
 }
 
 /// Parse a `nvidia-smi --format=csv,noheader` field list into a map.
@@ -150,5 +169,26 @@ mod tests {
         let out = r.run("definitely-not-a-real-binary-12345", &[]);
         assert!(out.missing);
         assert!(!out.ok);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sigint_kill_is_flagged() {
+        // `sh` sends itself SIGINT; the default action terminates it, so the
+        // exit status is a signal kill, not a non-zero exit code.
+        let r = CommandRunner::new();
+        let out = r.run("sh", &["-c", "kill -INT $$"]);
+        assert!(out.killed_by_sigint);
+        assert!(!out.ok);
+        assert_eq!(out.exit_code, None);
+    }
+
+    #[test]
+    fn non_zero_exit_is_not_a_sigint_kill() {
+        let r = CommandRunner::new();
+        let out = r.run("sh", &["-c", "exit 3"]);
+        assert!(!out.killed_by_sigint);
+        assert!(!out.ok);
+        assert_eq!(out.exit_code, Some(3));
     }
 }

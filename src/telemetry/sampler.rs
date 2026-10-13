@@ -157,8 +157,10 @@ fn run_sampler(
                     let _ = tx.send(SamplerEvent::Sample(sample));
                 }
             }
-        } else if !smi_failing {
-            // ok → failing transition: the GPU may have just been reset.
+        } else if !smi_failing && !out.killed_by_sigint {
+            // ok → failing transition: the GPU may have just been reset. A
+            // SIGINT kill (Ctrl+C) is user-initiated, not a real failure, so
+            // it must not register as nvidia-smi going stale.
             smi_failing = true;
             let _ = tx.send(SamplerEvent::SmiStale(true));
             let _ = tx.send(SamplerEvent::Reset(FailureMarker {

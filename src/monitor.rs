@@ -398,7 +398,8 @@ fn hud_line(
 // ---------------------------------------------------------------------------
 
 /// `/dev/tty` in raw mode (no echo, no line buffering, 100 ms read timeout)
-/// so a single `m` press registers immediately.
+/// so a single `m` press registers immediately. Signals stay enabled, so
+/// Ctrl-C raises SIGINT and the handler stops the monitor.
 struct TtyRaw {
     fd: libc::c_int,
     orig: libc::termios,
@@ -418,7 +419,7 @@ impl TtyRaw {
             }
             let mut raw = orig;
             raw.c_iflag &= !(libc::ICRNL | libc::IXON | libc::BRKINT);
-            raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
+            raw.c_lflag &= !(libc::ICANON | libc::ECHO); // ISIG stays on: Ctrl-C raises SIGINT
             raw.c_cc[libc::VMIN] = 0;
             raw.c_cc[libc::VTIME] = 1; // 100 ms
             if libc::tcsetattr(fd, libc::TCSANOW, &raw) != 0 {
